@@ -1,0 +1,44 @@
+# Environment
+.env
+.env.local
+*.env
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+.venv/
+env/
+
+# Node
+node_modules/
+frontend/dist/
+
+# Data and artifacts
+datasets/uploads/*
+!datasets/uploads/.gitkeep
+ml_models/random_forest/*
+!ml_models/random_forest/.gitkeep
+ml_models/lstm/*
+!ml_models/lstm/.gitkeep
+ml_models/isolation_forest/*
+!ml_models/isolation_forest/.gitkeep
+ml_models/anomaly_detection/*
+!ml_models/anomaly_detection/.gitkeep
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/
