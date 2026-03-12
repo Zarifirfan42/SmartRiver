@@ -6,6 +6,7 @@ const links = [
   { to: '/river-health', label: 'River Health' },
   { to: '/forecast', label: 'Forecast' },
   { to: '/alerts', label: 'Alerts' },
+  { to: '/anomaly-detection', label: 'Anomaly Detection' },
   { to: '/export', label: 'Export' },
 ]
 

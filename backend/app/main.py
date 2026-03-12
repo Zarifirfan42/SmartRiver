@@ -1,6 +1,7 @@
 """FastAPI app entry: CORS, router includes, lifespan."""
 import sys
 from pathlib import Path
+from contextlib import asynccontextmanager
 
 # Ensure project root is on path so backend.* and modules work when running from backend/
 _root = Path(__file__).resolve().parents[2]
@@ -9,6 +10,20 @@ if _root and str(_root) not in sys.path:
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """On startup: seed default admin if not present."""
+    try:
+        from backend.db.repository import seed_default_admin
+        admin = seed_default_admin()
+        if admin:
+            print("Default admin created: admin@smartriver.com")
+    except Exception as e:
+        print("Seed admin skipped:", e)
+    yield
+
 
 # from data_management.controllers.auth_controller import router as auth_router
 # from data_management.controllers.dataset_controller import router as dataset_router
@@ -22,6 +37,7 @@ app = FastAPI(
     title="SmartRiver API",
     description="Predictive River Pollution Monitoring System",
     version="1.0.0",
+    lifespan=lifespan,
 )
 
 app.add_middleware(

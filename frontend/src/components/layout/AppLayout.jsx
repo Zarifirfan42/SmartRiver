@@ -6,6 +6,7 @@ const navPublic = [
   { to: '/river-health', label: 'River Health', icon: '🌊' },
   { to: '/forecast', label: 'Pollution Forecast', icon: '📈' },
   { to: '/alerts', label: 'Alert Monitoring', icon: '🔔' },
+  { to: '/anomaly-detection', label: 'Anomaly Detection', icon: '⚠️' },
   { to: '/export', label: 'Report Export', icon: '📄' },
 ]
 const navAdmin = [

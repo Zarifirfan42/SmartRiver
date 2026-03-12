@@ -27,3 +27,8 @@ export async function getAlerts(params = {}) {
   const { data } = await api.get('/alerts/', { params })
   return data.items || []
 }
+
+export async function getAnomalies(params = {}) {
+  const { data } = await api.get('/dashboard/anomalies', { params })
+  return data.anomalies || []
+}

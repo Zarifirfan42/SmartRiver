@@ -9,6 +9,7 @@ import Dashboard from './pages/Dashboard'
 import RiverHealthPage from './pages/RiverHealthPage'
 import PollutionForecastPage from './pages/PollutionForecastPage'
 import AlertMonitoringPage from './pages/AlertMonitoringPage'
+import AnomalyDetectionPage from './pages/AnomalyDetectionPage'
 import ReportExportPage from './pages/ReportExportPage'
 import DatasetUploadPage from './pages/DatasetUploadPage'
 
@@ -31,6 +32,7 @@ function App() {
             <Route path="river-health" element={<RiverHealthPage />} />
             <Route path="forecast" element={<PollutionForecastPage />} />
             <Route path="alerts" element={<AlertMonitoringPage />} />
+            <Route path="anomaly-detection" element={<AnomalyDetectionPage />} />
             <Route path="export" element={<ReportExportPage />} />
             <Route
               path="upload"

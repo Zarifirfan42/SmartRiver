@@ -1,9 +1,11 @@
 """
 ML controller — Train and prediction API.
-Flow: Preprocessed data → ML Engine (RF / LSTM / Isolation Forest) → save to DB → Prediction API.
+Admin only: train. Authenticated users can run predictions (optional).
 """
 from pathlib import Path
-from fastapi import APIRouter, UploadFile, File, HTTPException, Query
+from fastapi import APIRouter, UploadFile, File, HTTPException, Query, Depends
+
+from backend.auth.dependencies import require_admin
 
 router = APIRouter()
 ROOT = Path(__file__).resolve().parents[3]
@@ -16,7 +18,10 @@ def _ensure_path():
 
 
 @router.post("/train")
-async def train_models(file: UploadFile = File(...)):
+async def train_models(
+    file: UploadFile = File(...),
+    current_user: dict = Depends(require_admin),
+):
     """
     Upload CSV → preprocess → train RF, LSTM, anomaly models. Save to ml_models/.
     """
@@ -130,37 +135,39 @@ async def predict_forecast(
 
 
 @router.post("/predict/anomaly")
-async def predict_anomaly(file: UploadFile = File(...)):
-    """Run anomaly detection; store anomalies and create alerts in DB."""
-    if not file.filename or not file.filename.lower().endswith(".csv"):
-        raise HTTPException(status_code=400, detail="CSV file required")
+async def predict_anomaly(file: UploadFile = File(None)):
+    """
+    Run anomaly detection on uploaded CSV or on the latest uploaded dataset.
+    Uses latest dataset if no file is provided. Stores anomalies with date, station, WQI, reason.
+    """
     _ensure_path()
     import pandas as pd
-    from backend.db.repository import save_prediction_log, save_alert
-    df = pd.read_csv(file.file)
-    try:
-        import joblib
-        path = ROOT / "ml_models" / "anomaly_detection" / "model.joblib"
-        if not path.exists():
-            raise HTTPException(status_code=404, detail="Train anomaly model first (POST /ml/train)")
-        data = joblib.load(path)
-        model, features = data["model"], data["feature_columns"]
-        X = df[[c for c in features if c in df.columns]].fillna(0)
-        pred = model.predict(X)
-        scores = model.decision_function(X)
-        anomalies = []
-        for i in range(len(df)):
-            if pred[i] == -1:
-                rec = {"index": i, "score": float(scores[i])}
-                if "station_code" in df.columns:
-                    rec["station_code"] = str(df.iloc[i]["station_code"])
-                if "date" in df.columns:
-                    rec["date"] = str(df.iloc[i]["date"])
-                anomalies.append(rec)
-                save_alert(rec.get("station_code", "?"), "Anomaly detected", "warning")
-        save_prediction_log("anomaly", {"anomalies": anomalies, "count": len(anomalies)}, model_name="isolation_forest")
-        return {"anomalies": anomalies, "count": len(anomalies)}
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    from backend.db.repository import get_latest_dataset
+    from backend.services.anomaly_service import run_anomaly_detection
+
+    if file and file.filename and file.filename.lower().endswith(".csv"):
+        content = await file.read()
+        import io
+        df = pd.read_csv(io.BytesIO(content))
+    else:
+        ds = get_latest_dataset()
+        if not ds:
+            raise HTTPException(status_code=400, detail="No dataset. Upload a CSV or provide a file.")
+        input_path = ROOT / ds["file_path"] if not Path(ds["file_path"]).is_absolute() else Path(ds["file_path"])
+        if not input_path.exists():
+            raise HTTPException(status_code=404, detail="Dataset file not found")
+        df = pd.read_csv(input_path)
+
+    model_path = ROOT / "ml_models" / "anomaly_detection" / "model.joblib"
+    if not model_path.exists():
+        raise HTTPException(status_code=404, detail="Train anomaly model first (POST /ml/train)")
+
+    anomalies = run_anomaly_detection(df=df)
+    return {"anomalies": anomalies, "count": len(anomalies)}
+
+
+@router.get("/anomalies")
+def get_anomalies(limit: int = Query(500, ge=1, le=2000)):
+    """Return latest anomaly run: list of { date, station_code, wqi, reason }."""
+    from backend.db.repository import get_latest_anomalies
+    return {"anomalies": get_latest_anomalies(limit=limit)}

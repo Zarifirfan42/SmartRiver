@@ -82,6 +82,14 @@ def load_dataset(datasets_dir: Path, filename: str | None = None) -> pd.DataFram
     if STATION_COL not in df.columns:
         df[STATION_COL] = "S01"
 
+    # Optional: canonical station name from dataset (for dashboard / River Health)
+    for name_col in ["station_name", "Station Name", "location", "Station", "station"]:
+        if name_col in df.columns and name_col != STATION_COL:
+            df["station_name"] = df[name_col].astype(str)
+            break
+    if "station_name" not in df.columns:
+        df["station_name"] = df[STATION_COL]
+
     return df
 
 

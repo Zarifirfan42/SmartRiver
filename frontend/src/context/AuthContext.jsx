@@ -1,4 +1,5 @@
-import { createContext, useContext, useState, useCallback } from 'react'
+import { createContext, useContext, useState, useCallback, useEffect } from 'react'
+import api from '../api/client'
 
 const AuthContext = createContext(null)
 
@@ -11,35 +12,46 @@ export function AuthProvider({ children }) {
       return null
     }
   })
+  const [loading, setLoading] = useState(!!localStorage.getItem('smartriver_token'))
 
-  const login = useCallback((email, password) => {
-    // Mock login – replace with API call
-    const mockUser = {
-      id: 1,
-      email: email || 'user@example.com',
-      full_name: 'Demo User',
-      role: email && email.includes('admin') ? 'admin' : 'public',
+  // Validate token on mount and restore user
+  useEffect(() => {
+    const token = localStorage.getItem('smartriver_token')
+    if (!token) {
+      setLoading(false)
+      return
     }
-    setUser(mockUser)
-    localStorage.setItem('smartriver_user', JSON.stringify(mockUser))
-    localStorage.setItem('smartriver_token', 'mock-jwt-token')
-    return Promise.resolve(mockUser)
+    api
+      .get('/auth/me')
+      .then((res) => {
+        const u = res.data
+        setUser({ id: u.id, email: u.email, full_name: u.full_name, role: u.role })
+        localStorage.setItem('smartriver_user', JSON.stringify({ id: u.id, email: u.email, full_name: u.full_name, role: u.role }))
+      })
+      .catch(() => {
+        localStorage.removeItem('smartriver_token')
+        localStorage.removeItem('smartriver_user')
+        setUser(null)
+      })
+      .finally(() => setLoading(false))
   }, [])
 
-  const register = useCallback((email, password, fullName) => {
-    // Mock register – replace with API call
-    return Promise.resolve().then(() => {
-      const mockUser = {
-        id: 2,
-        email: email || 'new@example.com',
-        full_name: fullName || 'New User',
-        role: 'public',
-      }
-      setUser(mockUser)
-      localStorage.setItem('smartriver_user', JSON.stringify(mockUser))
-      localStorage.setItem('smartriver_token', 'mock-jwt-token')
-      return mockUser
-    })
+  const login = useCallback(async (email, password) => {
+    const res = await api.post('/auth/login', { email, password })
+    const { access_token, user: u } = res.data
+    localStorage.setItem('smartriver_token', access_token)
+    localStorage.setItem('smartriver_user', JSON.stringify(u))
+    setUser(u)
+    return u
+  }, [])
+
+  const register = useCallback(async (email, password, fullName) => {
+    const res = await api.post('/auth/register', { email, password, full_name: fullName || undefined })
+    const { access_token, user: u } = res.data
+    localStorage.setItem('smartriver_token', access_token)
+    localStorage.setItem('smartriver_user', JSON.stringify(u))
+    setUser(u)
+    return u
   }, [])
 
   const logout = useCallback(() => {
@@ -51,7 +63,7 @@ export function AuthProvider({ children }) {
   const isAdmin = user?.role === 'admin'
 
   return (
-    <AuthContext.Provider value={{ user, login, register, logout, isAdmin }}>
+    <AuthContext.Provider value={{ user, login, register, logout, isAdmin, loading }}>
       {children}
     </AuthContext.Provider>
   )

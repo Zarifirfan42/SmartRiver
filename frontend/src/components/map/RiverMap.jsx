@@ -18,25 +18,35 @@ function getMarkerColor(statusSlug) {
   return '#ef4444'
 }
 
-function StationMarkers({ stations }) {
+function StationMarkers({ stations, onStationClick }) {
   return stations.map((s) => (
     <Marker
       key={s.station_code || s.id}
       position={[s.latitude ?? 4.2105, s.longitude ?? 101.9758]}
       icon={defaultIcon}
+      eventHandlers={onStationClick ? { click: () => onStationClick(s) } : undefined}
     >
       <Popup>
         <div className="text-sm">
           <p className="font-semibold">{s.station_name || s.station_code}</p>
           <p>WQI: {s.latest_wqi != null ? Number(s.latest_wqi).toFixed(1) : '—'}</p>
           <p className="capitalize text-surface-600">{s.river_status || '—'}</p>
+          {onStationClick && (
+            <button
+              type="button"
+              className="mt-2 text-river-600 hover:underline font-medium"
+              onClick={() => onStationClick(s)}
+            >
+              View history →
+            </button>
+          )}
         </div>
       </Popup>
     </Marker>
   ))
 }
 
-export default function RiverMap({ stations = [], center = [4.2105, 101.9758], zoom = 7, height = 320 }) {
+export default function RiverMap({ stations = [], center = [4.2105, 101.9758], zoom = 7, height = 320, onStationClick, useDefaultStations = true }) {
   const [mounted, setMounted] = useState(false)
   useEffect(() => setMounted(true), [])
 
@@ -46,7 +56,7 @@ export default function RiverMap({ stations = [], center = [4.2105, 101.9758], z
     { station_code: 'S03', station_name: 'Sungai Pinang', latitude: 5.4167, longitude: 100.3333, latest_wqi: 48, river_status: 'polluted' },
   ]
 
-  const list = stations.length ? stations : defaultStations
+  const list = stations.length ? stations : (useDefaultStations ? defaultStations : [])
 
   if (!mounted) {
     return (
@@ -71,7 +81,7 @@ export default function RiverMap({ stations = [], center = [4.2105, 101.9758], z
           attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
           url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
         />
-        <StationMarkers stations={list} />
+        <StationMarkers stations={list} onStationClick={onStationClick} />
       </MapContainer>
     </div>
   )

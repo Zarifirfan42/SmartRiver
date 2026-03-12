@@ -1,42 +1,74 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import ForecastChart from '../components/charts/ForecastChart'
-
-const mockHistorical = [
-  { date: '20 Jan', wqi: 69 },
-  { date: '25 Jan', wqi: 67 },
-  { date: '30 Jan', wqi: 70 },
-  { date: '02 Feb', wqi: 68 },
-  { date: '05 Feb', wqi: 66 },
-  { date: '10 Feb', wqi: 71 },
-]
-
-const mockForecast = [
-  { date: '15 Feb', wqi: 70 },
-  { date: '20 Feb', wqi: 68 },
-  { date: '25 Feb', wqi: 72 },
-  { date: '01 Mar', wqi: 69 },
-  { date: '05 Mar', wqi: 71 },
-  { date: '10 Mar', wqi: 67 },
-  { date: '15 Mar', wqi: 70 },
-  { date: '20 Mar', wqi: 73 },
-]
-
-const mockStations = [
-  { id: 'S01', name: 'Sungai Klang' },
-  { id: 'S02', name: 'Sungai Gombak' },
-  { id: 'S03', name: 'Sungai Pinang' },
-]
+import * as dashboardApi from '../api/dashboard'
 
 export default function PollutionForecastPage() {
-  const [station, setStation] = useState('S01')
+  const [stations, setStations] = useState([])
+  const [station, setStation] = useState('')
   const [horizon, setHorizon] = useState(14)
+  const [historical, setHistorical] = useState([])
+  const [forecast, setForecast] = useState([])
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState(null)
+
+  useEffect(() => {
+    let cancelled = false
+    async function fetchStations() {
+      try {
+        const list = await dashboardApi.getStations()
+        if (!cancelled && Array.isArray(list) && list.length > 0) {
+          setStations(list)
+          setStation((s) => s || list[0].station_code)
+        }
+      } catch (e) {
+        if (!cancelled) setError(e.message || 'Failed to load stations')
+      } finally {
+        if (!cancelled) setLoading(false)
+      }
+    }
+    fetchStations()
+    return () => { cancelled = true }
+  }, [])
+
+  useEffect(() => {
+    if (!station) return
+    let cancelled = false
+    setLoading(true)
+    setError(null)
+    Promise.all([
+      dashboardApi.getTimeSeries({ station_code: station, limit: 60 }),
+      dashboardApi.getForecast({ limit: Math.max(horizon, 30) }),
+    ])
+      .then(([series, fc]) => {
+        if (cancelled) return
+        setHistorical(Array.isArray(series) ? series : [])
+        setForecast(Array.isArray(fc) ? fc.slice(0, horizon) : [])
+      })
+      .catch((e) => {
+        if (!cancelled) {
+          setError(e.message || 'Failed to load data')
+          setHistorical([])
+          setForecast([])
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false)
+      })
+    return () => { cancelled = true }
+  }, [station, horizon])
 
   return (
     <div className="space-y-6 animate-fade-in">
       <div>
         <h1 className="font-display text-2xl font-semibold text-surface-900">Pollution forecast</h1>
-        <p className="text-surface-600 mt-0.5">WQI predictions 7–30 days ahead (LSTM)</p>
+        <p className="text-surface-600 mt-0.5">WQI predictions 7–30 days ahead (LSTM). Continuous timeline with historical data.</p>
       </div>
+
+      {error && (
+        <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-2 text-sm text-amber-800">
+          {error}. Run preprocessing and train the LSTM model to see forecasts.
+        </div>
+      )}
 
       <div className="flex flex-wrap gap-4">
         <div>
@@ -45,9 +77,13 @@ export default function PollutionForecastPage() {
             value={station}
             onChange={(e) => setStation(e.target.value)}
             className="input-field w-auto min-w-[200px]"
+            disabled={loading || stations.length === 0}
           >
-            {mockStations.map((s) => (
-              <option key={s.id} value={s.id}>{s.name}</option>
+            {stations.length === 0 && <option value="">No stations</option>}
+            {stations.map((s) => (
+              <option key={s.station_code} value={s.station_code}>
+                {s.station_name || s.station_code}
+              </option>
             ))}
           </select>
         </div>
@@ -66,18 +102,24 @@ export default function PollutionForecastPage() {
       </div>
 
       <div className="card">
-        <h2 className="font-display font-semibold text-surface-800 mb-4">WQI forecast</h2>
-        <ForecastChart
-          historical={mockHistorical}
-          forecast={horizon === 7 ? mockForecast.slice(0, 4) : horizon === 14 ? mockForecast : [...mockForecast, ...mockForecast.slice(0, 6)]}
-          height={340}
-        />
+        <h2 className="font-display font-semibold text-surface-800 mb-4">WQI forecast — continuous time series</h2>
+        <p className="text-sm text-surface-500 mb-4">X-axis: daily dates (e.g. Jan 1, Jan 2…). Historical Data and Forecast Prediction share the same timeline.</p>
+        {loading ? (
+          <p className="text-surface-500 py-8">Loading…</p>
+        ) : (
+          <ForecastChart
+            historical={historical.map((d) => ({ date: d.date, wqi: d.wqi ?? d.value }))}
+            forecast={forecast.map((f) => (typeof f === 'number' ? { wqi: f } : { date: f?.date, wqi: f?.wqi ?? f?.value }))}
+            height={340}
+          />
+        )}
       </div>
 
       <div className="card">
         <h2 className="font-display font-semibold text-surface-800 mb-2">About</h2>
         <p className="text-sm text-surface-600">
           Forecasts are generated by an LSTM model trained on historical DOE Malaysia water quality data.
+          The chart shows a continuous timeline: historical WQI followed by predicted WQI from the next day.
           Use them for planning and early awareness; always consider recent conditions.
         </p>
       </div>

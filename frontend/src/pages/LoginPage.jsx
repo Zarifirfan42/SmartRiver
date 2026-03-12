@@ -16,11 +16,11 @@ export default function LoginPage() {
     setError('')
     setLoading(true)
     try {
-      await login(email || 'user@example.com', password)
+      await login(email, password)
       const from = location.state?.from?.pathname || '/dashboard'
       navigate(from, { replace: true })
     } catch (err) {
-      setError(err.message || 'Login failed')
+      setError(err.response?.data?.detail || err.message || 'Login failed')
     } finally {
       setLoading(false)
     }

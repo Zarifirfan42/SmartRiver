@@ -22,16 +22,51 @@ ChartJS.register(
   Filler
 )
 
+const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
+
+/** Parse date string (YYYY-MM-DD, "Jan 1", "1 Jan", etc.) to Date. */
+function parseDate(str) {
+  if (!str) return null
+  const d = new Date(str)
+  return Number.isNaN(d.getTime()) ? null : d
+}
+
+/** Format Date for X-axis: "Jan 1", "Jan 2", ... */
+function formatDayMonth(date) {
+  if (!date || !(date instanceof Date) || Number.isNaN(date.getTime())) return ''
+  return `${MONTHS[date.getMonth()]} ${date.getDate()}`
+}
+
+/** Add n days to a date. */
+function addDays(date, n) {
+  const out = new Date(date)
+  out.setDate(out.getDate() + n)
+  return out
+}
+
 const options = {
   responsive: true,
   maintainAspectRatio: false,
   plugins: {
-    legend: { position: 'top' },
+    legend: {
+      position: 'top',
+      labels: {
+        usePointStyle: true,
+      },
+    },
   },
   scales: {
     x: {
       grid: { display: false },
-      ticks: { maxTicksLimit: 10 },
+      ticks: {
+        maxTicksLimit: 14,
+        callback: (_, i, ticks) => {
+          const total = ticks.length
+          if (total <= 14) return ticks[i].value
+          const step = Math.ceil(total / 14)
+          return i % step === 0 ? ticks[i].value : ''
+        },
+      },
     },
     y: {
       min: 0,
@@ -43,35 +78,80 @@ const options = {
 }
 
 export default function ForecastChart({ historical = [], forecast = [], height = 280 }) {
-  const histLabels = historical.map((d) => d.date || d.label)
-  const histValues = historical.map((d) => d.wqi ?? d.value)
-  const fcLabels = forecast.map((d) => d.date || d.label)
-  const fcValues = forecast.map((d) => d.wqi ?? d.value)
+  // Normalize and sort historical by date for a continuous timeline
+  const histWithDates = historical
+    .map((d) => {
+      const dateStr = d.date || d.label
+      const parsed = parseDate(dateStr)
+      return {
+        dateStr,
+        date: parsed,
+        wqi: d.wqi ?? d.value,
+      }
+    })
+    .filter((x) => x.date != null || x.dateStr)
+    .sort((a, b) => {
+      if (!a.date && !b.date) return 0
+      if (!a.date) return 1
+      if (!b.date) return -1
+      return a.date.getTime() - b.date.getTime()
+    })
 
-  const pad = histLabels.length
+  const histDates = histWithDates.map((x) => x.date)
+  const histValues = histWithDates.map((x) => x.wqi)
+  const lastHistDate = histDates.length > 0 ? histDates[histDates.length - 1] : null
+
+  // Forecast values (API may return [{ wqi }, ...] or [number, ...])
+  const fcValues = forecast.map((d) => (typeof d === 'number' ? d : d?.wqi ?? null)).filter((v) => v != null)
+
+  // Generate continuous daily dates for forecast: day after last hist (or today if no hist), then +1 each
+  const forecastDates = []
+  const startDate = lastHistDate || new Date()
+  if (fcValues.length > 0) {
+    for (let i = 0; i < fcValues.length; i++) {
+      forecastDates.push(addDays(startDate, lastHistDate ? i + 1 : i))
+    }
+  }
+
+  // Continuous timeline: historical labels + forecast labels (daily format)
+  const histLabels = histDates.map((d) => formatDayMonth(d))
+  const fcLabels = forecastDates.map((d) => formatDayMonth(d))
   const allLabels = [...histLabels, ...fcLabels]
-  const histData = [...histValues, ...fcValues.map(() => null)]
-  const fcData = [...histValues.map(() => null), ...fcValues]
+
+  // Historical dataset: values for history, null for forecast positions
+  const histData = [...histValues, ...fcLabels.map(() => null)]
+
+  // Forecast dataset: null until last hist index, then bridge (last hist value) + forecast values so line continues
+  const lastVal = histValues.length > 0 ? histValues[histValues.length - 1] : null
+  const fcData = [
+    ...Array(Math.max(0, histLabels.length - 1)).fill(null),
+    ...(histLabels.length > 0 && lastVal != null ? [lastVal] : []),
+    ...fcValues,
+  ]
+  while (fcData.length < allLabels.length) fcData.push(null)
+  fcData.length = allLabels.length
 
   const chartData = {
     labels: allLabels,
     datasets: [
       {
-        label: 'Historical WQI',
+        label: 'Historical Data',
         data: histData,
         borderColor: '#64748b',
         backgroundColor: 'rgba(100, 116, 139, 0.08)',
         fill: true,
         tension: 0.3,
+        pointRadius: 2,
       },
       {
-        label: 'Forecast WQI',
+        label: 'Forecast Prediction',
         data: fcData,
         borderColor: '#0891b2',
         borderDash: [5, 5],
         backgroundColor: 'rgba(6, 182, 212, 0.08)',
         fill: true,
         tension: 0.3,
+        pointRadius: 2,
       },
     ],
   }

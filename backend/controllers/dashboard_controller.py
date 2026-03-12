@@ -3,7 +3,7 @@ Dashboard controller — Aggregates for visualization.
 Serves summary, time-series, forecast from repository (same as water-quality; alias for clarity).
 """
 from fastapi import APIRouter, Query
-from backend.db.repository import get_summary, get_time_series, get_latest_forecast, get_stations
+from backend.db.repository import get_summary, get_time_series, get_latest_forecast, get_stations, get_latest_anomalies
 
 router = APIRouter()
 
@@ -29,3 +29,8 @@ def dashboard_forecast(limit: int = Query(30, ge=1, le=100)):
 @router.get("/stations")
 def dashboard_stations():
     return {"stations": get_stations()}
+
+
+@router.get("/anomalies")
+def dashboard_anomalies(limit: int = Query(500, ge=1, le=2000)):
+    return {"anomalies": get_latest_anomalies(limit=limit)}

@@ -23,8 +23,10 @@ npm run dev
 ```
 
 - The app will be at **http://localhost:3000**
-- Use **Register** or **Login** (any email/password works with the mock auth)
-- Use an email that contains `admin` (e.g. `admin@test.com`) to see the **Dataset Upload** menu
+- **Login** with the default admin account to access Dataset Upload and admin features:
+  - **Email:** `admin@smartriver.com`
+  - **Password:** `admin123`
+- Or **Register** a new account (role: User). Only admins can upload datasets, manage stations, and trigger processing.
 
 ---
 

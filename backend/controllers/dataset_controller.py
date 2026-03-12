@@ -1,8 +1,11 @@
 """
 Dataset controller — Upload and list datasets. Store in repository for pipeline flow.
+Admin: upload. Any user: list.
 """
 from pathlib import Path
 from fastapi import APIRouter, UploadFile, File, Depends
+
+from backend.auth.dependencies import require_admin
 
 router = APIRouter()
 ROOT = Path(__file__).resolve().parents[3]
@@ -17,8 +20,11 @@ def list_datasets():
 
 
 @router.post("/upload")
-async def upload_dataset(file: UploadFile = File(...)):
-    """Upload CSV; save to datasets/uploads and register in DB. Returns dataset_id for preprocessing."""
+async def upload_dataset(
+    file: UploadFile = File(...),
+    current_user: dict = Depends(require_admin),
+):
+    """Upload CSV; save to datasets/uploads and register in DB. Admin only."""
     if not file.filename or not file.filename.lower().endswith(".csv"):
         return {"error": "CSV file required"}
     content = await file.read()
@@ -36,7 +42,7 @@ async def upload_dataset(file: UploadFile = File(...)):
         file_path=file_path,
         file_size_bytes=len(content),
         row_count=0,
-        uploaded_by=1,
+        uploaded_by=current_user["id"],
     )
     return {
         "dataset_id": row["id"],

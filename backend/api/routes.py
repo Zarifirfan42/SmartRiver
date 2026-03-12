@@ -9,6 +9,11 @@ from backend.api import api_router
 def register_routes(app):
     """Register all API routes on the FastAPI app. Call from main.py."""
     try:
+        from backend.controllers.auth_controller import router as auth_router
+        api_router.include_router(auth_router, prefix="/auth", tags=["Auth"])
+    except ImportError:
+        pass
+    try:
         from backend.controllers.water_quality_controller import router as wq_router
         api_router.include_router(wq_router, prefix="/water-quality", tags=["Water Quality"])
     except ImportError:
@@ -36,6 +41,11 @@ def register_routes(app):
     try:
         from backend.controllers.dataset_controller import router as dataset_router
         api_router.include_router(dataset_router, prefix="/datasets", tags=["Datasets"])
+    except ImportError:
+        pass
+    try:
+        from backend.controllers.stations_controller import router as stations_router
+        api_router.include_router(stations_router, prefix="/stations", tags=["Stations"])
     except ImportError:
         pass
     app.include_router(api_router, prefix="/api/v1")

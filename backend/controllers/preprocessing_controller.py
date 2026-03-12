@@ -1,9 +1,11 @@
 """
 Preprocessing controller — Run data pipeline and store results.
-Flow: Dataset → Data Preprocessing (clean, impute, WQI) → save readings for dashboard.
+Admin only: trigger processing.
 """
 from pathlib import Path
-from fastapi import APIRouter, UploadFile, File, HTTPException
+from fastapi import APIRouter, UploadFile, File, HTTPException, Depends
+
+from backend.auth.dependencies import require_admin
 
 router = APIRouter()
 
@@ -15,6 +17,7 @@ ROOT = Path(__file__).resolve().parents[3]
 async def run_preprocessing(
     file: UploadFile = File(None),
     dataset_id: int = None,
+    current_user: dict = Depends(require_admin),
 ):
     """
     Run preprocessing on uploaded CSV or existing dataset.
@@ -65,19 +68,31 @@ async def run_preprocessing(
     except Exception as e:
         raise HTTPException(status_code=422, detail=f"Preprocessing failed: {e}")
 
-    # Store readings for dashboard (sample if very large)
+    # Store readings for dashboard (replace all so count matches dataset)
     dataset_id = dataset_id or 1
     readings = []
     for _, row in df.head(2000).iterrows():
         d = row.get("date")
         if hasattr(d, "strftime"):
             d = d.strftime("%Y-%m-%d")
+        station_code = str(row.get("station_code", "S01")).strip()
+        station_name = row.get("station_name")
+        if station_name is not None:
+            station_name = str(station_name).strip() or None
         readings.append({
-            "station_code": str(row.get("station_code", "S01")),
+            "station_code": station_code,
+            "station_name": station_name,
             "date": d or "",
             "wqi": float(row.get("WQI", 0)),
         })
     save_readings(dataset_id, readings)
+
+    # Automatically rerun anomaly detection on the same dataset
+    try:
+        from backend.services.anomaly_service import run_anomaly_detection
+        run_anomaly_detection(df=df)
+    except Exception:
+        pass  # Do not fail preprocessing if anomaly model is missing or fails
 
     return {
         "message": "Preprocessing complete",
