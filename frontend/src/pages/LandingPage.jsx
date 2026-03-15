@@ -1,6 +1,7 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { Link, useNavigate, useLocation } from 'react-router-dom'
 import { useAuth } from '../context/AuthContext'
+import * as dashboardApi from '../api/dashboard'
 
 const navLinks = [
   { to: '/', label: 'Home' },
@@ -47,6 +48,17 @@ export default function LandingPage() {
   const navigate = useNavigate()
   const location = useLocation()
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false)
+  const [liveStats, setLiveStats] = useState(null)
+
+  useEffect(() => {
+    let cancelled = false
+    dashboardApi.getSummary().then((s) => {
+      if (!cancelled) setLiveStats(s)
+    }).catch(() => {
+      if (!cancelled) setLiveStats(null)
+    })
+    return () => { cancelled = true }
+  }, [])
 
   const handleLogout = () => {
     logout()
@@ -243,6 +255,25 @@ export default function LandingPage() {
               official DOE Malaysia monitoring data and applies machine learning for classification,
               forecasting, and anomaly detection—all in one clean dashboard.
             </p>
+            {liveStats != null && (
+              <div className="mt-8 flex flex-wrap items-center justify-center gap-6 text-sm">
+                <span className="rounded-full bg-river-100 px-4 py-2 font-medium text-river-800">
+                  {liveStats.totalStations ?? 0} stations
+                </span>
+                <span className="rounded-full bg-surface-100 px-4 py-2 font-medium text-surface-700">
+                  Avg WQI {(liveStats.avgWqi ?? 0).toFixed(1)}
+                </span>
+                <span className="rounded-full bg-eco-100 px-4 py-2 font-medium text-eco-800">
+                  Clean: {liveStats.cleanCount ?? 0}
+                </span>
+                <span className="rounded-full bg-amber-100 px-4 py-2 font-medium text-amber-800">
+                  Slightly polluted: {liveStats.slightlyPollutedCount ?? 0}
+                </span>
+                <span className="rounded-full bg-red-100 px-4 py-2 font-medium text-red-800">
+                  Polluted: {liveStats.pollutedCount ?? 0}
+                </span>
+              </div>
+            )}
           </div>
         </div>
       </section>

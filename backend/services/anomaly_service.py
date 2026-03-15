@@ -64,7 +64,7 @@ def run_anomaly_detection(
         }
         if date_col:
             d = df.iloc[i][date_col]
-            rec["date"] = d.strftime("%Y-%m-%d") if hasattr(d, "strftime") else str(d)
+            rec["date"] = d.strftime("%Y-%m-%d") if hasattr(d, "strftime") else str(d).split(" ")[0][:10]
         else:
             rec["date"] = ""
         if station_col:
@@ -72,7 +72,10 @@ def run_anomaly_detection(
         else:
             rec["station_code"] = "—"
         if wqi_col and wqi_col in df.columns:
-            rec["wqi"] = float(df.iloc[i][wqi_col])
+            try:
+                rec["wqi"] = float(df.iloc[i][wqi_col])
+            except (TypeError, ValueError):
+                rec["wqi"] = None
         else:
             rec["wqi"] = None
         anomalies.append(rec)

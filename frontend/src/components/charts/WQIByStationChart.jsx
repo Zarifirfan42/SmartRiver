@@ -1,7 +1,7 @@
 /**
  * WQIByStationChart — Bar chart: WQI value per river station.
- * X-axis: River Stations, Y-axis: WQI Value.
- * Uses same station data as River Health page (from API).
+ * Title: Water Quality Index by Station. X-axis: Station Name, Y-axis: WQI Value.
+ * Legend and tooltip show station name and WQI.
  */
 import {
   Chart as ChartJS,
@@ -24,7 +24,7 @@ ChartJS.register(
 )
 
 const CHART_TITLE = 'Water Quality Index by Station'
-const X_AXIS_LABEL = 'River Stations'
+const X_AXIS_LABEL = 'Station Name'
 const Y_AXIS_LABEL = 'WQI Value'
 
 const options = {
@@ -44,6 +44,10 @@ const options = {
     },
     tooltip: {
       callbacks: {
+        title: (items) => {
+          const name = items[0]?.label
+          return name ? `Station: ${name}` : 'Station'
+        },
         label: (context) => `WQI: ${context.raw}`,
       },
     },
@@ -91,7 +95,7 @@ export default function WQIByStationChart({ stations = [], height = 320 }) {
     labels,
     datasets: [
       {
-        label: 'WQI',
+        label: 'WQI Value',
         data: values,
         backgroundColor: backgroundColors,
         borderColor: backgroundColors.map((c) => c.replace('0.8', '1')),

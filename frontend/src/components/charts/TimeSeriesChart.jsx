@@ -27,13 +27,20 @@ const options = {
   maintainAspectRatio: false,
   plugins: {
     legend: { position: 'top' },
+    title: {
+      display: true,
+      text: 'Station WQI Trend',
+      font: { size: 14 },
+    },
   },
   scales: {
     x: {
+      title: { display: true, text: 'Date', font: { size: 12 } },
       grid: { display: false },
-      ticks: { maxTicksLimit: 8 },
+      ticks: { maxTicksLimit: 12 },
     },
     y: {
+      title: { display: true, text: 'WQI value', font: { size: 12 } },
       min: 0,
       max: 100,
       grid: { color: '#e2e8f0' },

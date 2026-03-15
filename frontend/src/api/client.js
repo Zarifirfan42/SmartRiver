@@ -1,12 +1,19 @@
 /**
  * API client — Axios instance with base URL and auth header.
+ * In dev we use relative /api/v1 so Vite proxies to the backend (avoids network/CORS issues).
  */
 import axios from 'axios'
 
-const baseURL = import.meta.env.VITE_API_URL || 'http://localhost:8000'
+const baseURL =
+  import.meta.env.VITE_API_URL ||
+  (import.meta.env.DEV ? '/api/v1' : 'http://localhost:8000/api/v1')
+
+const resolvedBase = baseURL.startsWith('http')
+  ? (baseURL.includes('/api/v1') ? baseURL.replace(/\/$/, '') : `${baseURL.replace(/\/$/, '')}/api/v1`)
+  : baseURL
 
 export const api = axios.create({
-  baseURL: `${baseURL}/api/v1`,
+  baseURL: resolvedBase,
   headers: { 'Content-Type': 'application/json' },
 })
 

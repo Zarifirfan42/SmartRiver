@@ -87,7 +87,7 @@ def save_readings(dataset_id: int, readings: list[dict]) -> None:
     """
     _store["readings"].clear()
     for r in readings:
-        _store["readings"].append({
+        rec = {
             "id": _next_id("readings"),
             "dataset_id": dataset_id,
             "station_code": str(r.get("station_code", "S01")).strip(),
@@ -95,7 +95,10 @@ def save_readings(dataset_id: int, readings: list[dict]) -> None:
             "reading_date": r.get("date", r.get("reading_date", "")),
             "wqi": float(r.get("wqi", 0)),
             "created_at": datetime.utcnow().isoformat(),
-        })
+        }
+        if r.get("river_status") is not None:
+            rec["river_status"] = str(r.get("river_status")).strip() or None
+        _store["readings"].append(rec)
 
 
 def save_prediction_log(
@@ -162,22 +165,147 @@ def get_summary() -> dict:
     }
 
 
-def get_time_series(station_code: Optional[str] = None, limit: int = 100) -> list[dict]:
-    """WQI time series for charts."""
+def get_time_series(station_code: Optional[str] = None, station_name: Optional[str] = None, year: Optional[int] = None, limit: int = 100) -> list[dict]:
+    """WQI time series for charts. Filter by station (code or name) and/or year. Chronological, no duplicate dates per station."""
     readings = _store["readings"]
-    if station_code:
-        readings = [r for r in readings if r["station_code"] == station_code]
+    if station_code or station_name:
+        readings = [
+            r for r in readings
+            if (station_code and r.get("station_code") == station_code)
+            or (station_name and (r.get("station_name") == station_name or r.get("station_code") == station_name))
+        ]
+    if year is not None:
+        readings = [r for r in readings if r.get("reading_date", "")[:4] == str(year)]
+    readings = sorted(readings, key=lambda x: (x.get("reading_date", ""), x.get("station_code", "")))
+    # Dedupe by date for single-station view (keep last per date)
+    if station_code or station_name:
+        seen = set()
+        out = []
+        for r in reversed(readings):
+            d = r.get("reading_date", "")
+            if d not in seen:
+                seen.add(d)
+                out.append(r)
+        readings = list(reversed(out))
+    readings = readings[-limit:]
+    out = []
+    for r in readings:
+        rec = {
+            "date": r["reading_date"],
+            "wqi": r["wqi"],
+            "station_code": r.get("station_code"),
+            "station_name": r.get("station_name") or r.get("station_code"),
+        }
+        if r.get("river_status") is not None:
+            rec["river_status"] = r["river_status"]
+        out.append(rec)
+    return out
+
+
+def get_wqi_data(
+    station_code: Optional[str] = None,
+    station_name: Optional[str] = None,
+    year: Optional[int] = None,
+    limit: int = 500,
+) -> list[dict]:
+    """WQI records: Date, Station Name, WQI, River Status. Filter by station and/or year."""
+    readings = _store["readings"]
+    if station_code or station_name:
+        readings = [
+            r for r in readings
+            if (station_code and r.get("station_code") == station_code)
+            or (station_name and (r.get("station_name") == station_name or r.get("station_code") == station_name))
+        ]
+    if year is not None:
+        readings = [r for r in readings if r.get("reading_date", "")[:4] == str(year)]
     readings = sorted(readings, key=lambda x: x.get("reading_date", ""))[-limit:]
-    return [{"date": r["reading_date"], "wqi": r["wqi"], "station_code": r["station_code"]} for r in readings]
+    out = []
+    for r in readings:
+        status = r.get("river_status")
+        if status is None:
+            w = r.get("wqi", 0)
+            status = "clean" if w >= 81 else ("slightly_polluted" if w >= 60 else "polluted")
+        out.append({
+            "date": r["reading_date"],
+            "station": r.get("station_name") or r.get("station_code"),
+            "station_code": r.get("station_code"),
+            "station_name": r.get("station_name") or r.get("station_code"),
+            "wqi": r["wqi"],
+            "river_status": status,
+        })
+    return out
 
 
-def get_latest_forecast(limit: int = 30) -> list[dict]:
-    """Latest forecast from prediction_logs (type=forecast)."""
+def get_readings_table(
+    station_name: Optional[str] = None,
+    year: Optional[int] = None,
+    status: Optional[str] = None,
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    sort_by: str = "date",
+    sort_order: str = "asc",
+    limit: int = 2000,
+) -> list[dict]:
+    """Dataset table: Station Name, Date, WQI, River Status. Filter by station, year, status, date range; sort by WQI or date."""
+    readings = list(_store["readings"])
+    if station_name:
+        readings = [r for r in readings if (r.get("station_name") or r.get("station_code")) == station_name]
+    if year is not None:
+        readings = [r for r in readings if (r.get("reading_date") or "")[:4] == str(year)]
+    if status:
+        def _status(r):
+            st = r.get("river_status")
+            if st:
+                return str(st).strip().lower().replace(" ", "_")
+            w = r.get("wqi", 0)
+            return "clean" if w >= 81 else ("slightly_polluted" if w >= 60 else "polluted")
+        status_norm = status.strip().lower().replace(" ", "_")
+        readings = [r for r in readings if _status(r) == status_norm]
+    if date_from:
+        readings = [r for r in readings if (r.get("reading_date") or "") >= date_from[:10]]
+    if date_to:
+        readings = [r for r in readings if (r.get("reading_date") or "") <= date_to[:10]]
+    key = "wqi" if sort_by == "wqi" else "reading_date"
+    reverse = sort_order.lower() == "desc"
+    readings = sorted(readings, key=lambda x: (x.get(key) if key == "wqi" else x.get(key) or ""), reverse=reverse)
+    readings = readings[:limit]
+    out = []
+    for r in readings:
+        st = r.get("river_status")
+        if st is None:
+            w = r.get("wqi", 0)
+            st = "clean" if w >= 81 else ("slightly_polluted" if w >= 60 else "polluted")
+        out.append({
+            "station_name": r.get("station_name") or r.get("station_code"),
+            "date": r["reading_date"],
+            "wqi": r["wqi"],
+            "river_status": st,
+        })
+    return out
+
+
+def get_available_years() -> list[int]:
+    """Return distinct years from readings (from dataset)."""
+    years = set()
+    for r in _store["readings"]:
+        d = r.get("reading_date") or ""
+        if len(d) >= 4:
+            try:
+                years.add(int(d[:4]))
+            except ValueError:
+                pass
+    return sorted(years)
+
+
+def get_latest_forecast(station_code: Optional[str] = None, limit: int = 30) -> list[dict]:
+    """Latest forecast from prediction_logs (type=forecast). Optional filter by station."""
     logs = [l for l in _store["prediction_logs"] if l["prediction_type"] == "forecast"]
     if not logs:
         return []
     latest = sorted(logs, key=lambda x: x["created_at"])[-1]
     forecast = latest.get("result_json", {}).get("forecast", [])
+    if station_code:
+        forecast = [f for f in forecast if f.get("station_code") == station_code or f.get("station_name") == station_code]
     return forecast[:limit]
 
 
@@ -195,21 +323,24 @@ def get_latest_dataset() -> Optional[dict]:
     return max(_store["datasets"], key=lambda d: d["id"])
 
 
-def get_latest_anomalies(limit: int = 500) -> list[dict]:
+def get_latest_anomalies(station_code: Optional[str] = None, limit: int = 500) -> list[dict]:
     """
-    Return latest anomaly run as list of { date, station_code, wqi, reason }.
-    From most recent prediction_log with prediction_type='anomaly'.
+    Return latest anomaly run as list of { date, station_code, station_name, wqi, reason }.
+    Filter by station if station_code (or station_name) provided.
     """
     logs = [l for l in _store["prediction_logs"] if l.get("prediction_type") == "anomaly"]
     if not logs:
         return []
     latest = max(logs, key=lambda x: x.get("created_at", ""))
     anomalies = latest.get("result_json", {}).get("anomalies", [])
+    if station_code:
+        anomalies = [a for a in anomalies if (a.get("station_code") or a.get("station_name")) == station_code]
     out = []
     for a in anomalies[:limit]:
         out.append({
             "date": a.get("date", ""),
             "station_code": a.get("station_code", "—"),
+            "station_name": a.get("station_name") or a.get("station_code", "—"),
             "wqi": a.get("wqi"),
             "reason": a.get("reason", "Abnormal spike"),
         })
@@ -217,46 +348,38 @@ def get_latest_anomalies(limit: int = 500) -> list[dict]:
 
 
 def get_stations() -> list[dict]:
-    """Stations with latest WQI from readings (dataset-driven). Names from dataset when available."""
+    """Stations from dataset only: full station names, latest WQI, river status."""
     from collections import defaultdict
     by_station = defaultdict(list)
     for r in _store["readings"]:
-        by_station[r["station_code"]].append(r)
+        key = r.get("station_name") or r.get("station_code", "")
+        if key:
+            by_station[key].append(r)
     out = []
-    for code, rows in by_station.items():
+    for name, rows in by_station.items():
         rows = sorted(rows, key=lambda x: x.get("reading_date", ""))
         latest = rows[-1] if rows else {}
         wqi = latest.get("wqi", 0)
-        status = "clean" if wqi >= 81 else ("slightly_polluted" if wqi >= 60 else "polluted")
+        status = latest.get("river_status")
+        if status is None:
+            status = "clean" if wqi >= 81 else ("slightly_polluted" if wqi >= 60 else "polluted")
         out.append({
-            "station_code": code,
-            "station_name": latest.get("station_name") or code,
+            "station_code": name,
+            "station_name": name,
             "latest_wqi": wqi,
             "river_status": status,
             "last_reading_date": latest.get("reading_date"),
         })
-    # Merge with admin-managed stations (by code) for extra metadata only
-    admin_codes = {s["station_code"]: s for s in _store["stations"]}
+    # Merge admin-managed coordinates only (by station_code/name)
+    admin_codes = {s.get("station_code") or s.get("station_name"): s for s in _store["stations"]}
     for rec in out:
-        if rec["station_code"] in admin_codes:
-            adm = admin_codes[rec["station_code"]]
-            if adm.get("station_name"):
-                rec["station_name"] = adm["station_name"]
+        key = rec.get("station_code") or rec.get("station_name")
+        if key and key in admin_codes:
+            adm = admin_codes[key]
             if adm.get("latitude") is not None:
                 rec["latitude"] = adm["latitude"]
             if adm.get("longitude") is not None:
                 rec["longitude"] = adm["longitude"]
-    for code, s in admin_codes.items():
-        if not any(r["station_code"] == code for r in out):
-            out.append({
-                "station_code": s.get("station_code", code),
-                "station_name": s.get("station_name") or code,
-                "latitude": s.get("latitude"),
-                "longitude": s.get("longitude"),
-                "latest_wqi": s.get("latest_wqi"),
-                "river_status": s.get("river_status", "clean"),
-                "last_reading_date": s.get("last_reading_date"),
-            })
     return out
 
 

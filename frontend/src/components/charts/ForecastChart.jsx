@@ -24,10 +24,17 @@ ChartJS.register(
 
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
 
-/** Parse date string (YYYY-MM-DD, "Jan 1", "1 Jan", etc.) to Date. */
+/** Parse date string (YYYY-MM-DD, "Jan 1", "1 Jan", etc.) to Date. Prefer local date for YYYY-MM-DD. */
 function parseDate(str) {
   if (!str) return null
-  const d = new Date(str)
+  const s = String(str).trim()
+  const match = s.match(/^(\d{4})-(\d{2})-(\d{2})/)
+  if (match) {
+    const [, y, m, d] = match.map(Number)
+    const d2 = new Date(y, m - 1, d)
+    return Number.isNaN(d2.getTime()) ? null : d2
+  }
+  const d = new Date(s)
   return Number.isNaN(d.getTime()) ? null : d
 }
 
@@ -50,25 +57,22 @@ const options = {
   plugins: {
     legend: {
       position: 'top',
-      labels: {
-        usePointStyle: true,
-      },
+      labels: { usePointStyle: true },
+    },
+    title: {
+      display: true,
+      text: 'WQI: Historical Data vs Forecast Prediction',
+      font: { size: 14 },
     },
   },
   scales: {
     x: {
+      title: { display: true, text: 'Date', font: { size: 12 } },
       grid: { display: false },
-      ticks: {
-        maxTicksLimit: 14,
-        callback: (_, i, ticks) => {
-          const total = ticks.length
-          if (total <= 14) return ticks[i].value
-          const step = Math.ceil(total / 14)
-          return i % step === 0 ? ticks[i].value : ''
-        },
-      },
+      ticks: { maxTicksLimit: 20, autoSkip: true, autoSkipPadding: 8 },
     },
     y: {
+      title: { display: true, text: 'WQI', font: { size: 12 } },
       min: 0,
       max: 100,
       grid: { color: '#e2e8f0' },
@@ -78,7 +82,7 @@ const options = {
 }
 
 export default function ForecastChart({ historical = [], forecast = [], height = 280 }) {
-  // Normalize and sort historical by date for a continuous timeline
+  // Normalize and sort historical by date for a continuous timeline (only use rows with valid parsed date)
   const histWithDates = historical
     .map((d) => {
       const dateStr = d.date || d.label
@@ -89,13 +93,8 @@ export default function ForecastChart({ historical = [], forecast = [], height =
         wqi: d.wqi ?? d.value,
       }
     })
-    .filter((x) => x.date != null || x.dateStr)
-    .sort((a, b) => {
-      if (!a.date && !b.date) return 0
-      if (!a.date) return 1
-      if (!b.date) return -1
-      return a.date.getTime() - b.date.getTime()
-    })
+    .filter((x) => x.date != null)
+    .sort((a, b) => a.date.getTime() - b.date.getTime())
 
   const histDates = histWithDates.map((x) => x.date)
   const histValues = histWithDates.map((x) => x.wqi)

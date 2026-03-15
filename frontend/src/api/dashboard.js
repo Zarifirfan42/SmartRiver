@@ -1,5 +1,6 @@
 /**
- * Dashboard API — Summary, time-series, forecast, stations.
+ * Dashboard API — All data from dataset (no hardcoding).
+ * Summary, time-series, forecast, stations, anomalies, readings table, years.
  */
 import api from './client'
 
@@ -31,4 +32,19 @@ export async function getAlerts(params = {}) {
 export async function getAnomalies(params = {}) {
   const { data } = await api.get('/dashboard/anomalies', { params })
   return data.anomalies || []
+}
+
+export async function getWqiData(params = {}) {
+  const { data } = await api.get('/dashboard/wqi-data', { params })
+  return data.data || []
+}
+
+export async function getReadingsTable(params = {}) {
+  const { data } = await api.get('/dashboard/readings-table', { params })
+  return data.data || []
+}
+
+export async function getYears() {
+  const { data } = await api.get('/dashboard/years')
+  return data.years || []
 }

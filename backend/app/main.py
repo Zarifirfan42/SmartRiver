@@ -1,4 +1,5 @@
 """FastAPI app entry: CORS, router includes, lifespan."""
+import os
 import sys
 from pathlib import Path
 from contextlib import asynccontextmanager
@@ -10,11 +11,12 @@ if _root and str(_root) not in sys.path:
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import RedirectResponse
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """On startup: seed default admin if not present."""
+    """On startup: seed default admin, load default dataset, run anomaly if model exists."""
     try:
         from backend.db.repository import seed_default_admin
         admin = seed_default_admin()
@@ -22,6 +24,12 @@ async def lifespan(app: FastAPI):
             print("Default admin created: admin@smartriver.com")
     except Exception as e:
         print("Seed admin skipped:", e)
+    try:
+        from backend.services.dataset_loader import run_startup_data_load
+        run_startup_data_load()
+        print("Default dataset loaded; stations and WQI data ready.")
+    except Exception as e:
+        print("Dataset load skipped:", e)
     yield
 
 
@@ -58,13 +66,43 @@ app.add_middleware(
 try:
     from backend.api.routes import register_routes
     register_routes(app)
-except ImportError:
-    pass
+except ImportError as e:
+    print("Warning: register_routes failed:", e)
+
+# Ensure auth is always mounted (login/register) even if routes had a partial failure
+try:
+    from backend.controllers.auth_controller import router as auth_router
+    app.include_router(auth_router, prefix="/api/v1/auth", tags=["Auth"])
+except Exception as e:
+    print("Warning: Auth routes could not be loaded:", e)
 
 
 @app.get("/")
 def root():
-    return {"message": "SmartRiver API", "docs": "/docs"}
+    return {
+        "message": "SmartRiver API",
+        "docs": "/docs",
+        "app": "Open the web app at http://localhost:3000 for login, dashboard, and all pages.",
+    }
+
+
+# Redirect browser users who hit the API URL to the frontend app
+FRONTEND_URL = os.environ.get("FRONTEND_URL", "http://localhost:3000")
+
+
+@app.get("/login")
+def redirect_login():
+    return RedirectResponse(url=f"{FRONTEND_URL}/login", status_code=302)
+
+
+@app.get("/register")
+def redirect_register():
+    return RedirectResponse(url=f"{FRONTEND_URL}/register", status_code=302)
+
+
+@app.get("/dashboard")
+def redirect_dashboard():
+    return RedirectResponse(url=f"{FRONTEND_URL}/dashboard", status_code=302)
 
 
 @app.get("/health")

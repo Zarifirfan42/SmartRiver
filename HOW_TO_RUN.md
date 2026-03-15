@@ -23,6 +23,8 @@ npm run dev
 ```
 
 - The app will be at **http://localhost:3000**
+- **Default dataset:** On backend startup, the system loads `datasets/Lampiran A - Sungai Kulim.xlsx` (or `.csv`) automatically. If the file is missing, sample data is used so all pages show data. No upload is required.
+- **Login and Register require the backend to be running** (see step 2). In development, the frontend proxies `/api` to the backend, so start the backend first to avoid "Network error".
 - **Login** with the default admin account to access Dataset Upload and admin features:
   - **Email:** `admin@smartriver.com`
   - **Password:** `admin123`
@@ -62,8 +64,10 @@ python -m uvicorn backend.app.main:app --reload --host 0.0.0.0 --port 8000
 ```
 
 - API will be at **http://localhost:8000**
+- **Default dataset:** Place `Lampiran A - Sungai Kulim.xlsx` in the `datasets/` folder. On startup, the backend loads it, populates stations and WQI data, and runs anomaly detection if the model exists. If the file is missing, sample data is used.
 - API docs (Swagger): **http://localhost:8000/docs**
-- Frontend uses `http://localhost:8000` for API (or set `VITE_API_URL`).
+- **Use http://localhost:3000 for the app** (login, register, dashboard). If you open http://localhost:8000/login or /register by mistake, the API will redirect you to the frontend.
+- The frontend (in dev) proxies API requests to this URL; you can override with `VITE_API_URL` if needed.
 
 ---
 

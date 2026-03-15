@@ -7,12 +7,7 @@ from backend.api import api_router
 
 
 def register_routes(app):
-    """Register all API routes on the FastAPI app. Call from main.py."""
-    try:
-        from backend.controllers.auth_controller import router as auth_router
-        api_router.include_router(auth_router, prefix="/auth", tags=["Auth"])
-    except ImportError:
-        pass
+    """Register all API routes on the FastAPI app. Call from main.py. Auth is registered in main.py."""
     try:
         from backend.controllers.water_quality_controller import router as wq_router
         api_router.include_router(wq_router, prefix="/water-quality", tags=["Water Quality"])

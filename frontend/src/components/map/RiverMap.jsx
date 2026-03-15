@@ -12,10 +12,13 @@ const defaultIcon = L.icon({
   popupAnchor: [1, -34],
 })
 
-function getMarkerColor(statusSlug) {
-  if (statusSlug === 'clean') return '#10b981'
-  if (statusSlug === 'slightly_polluted') return '#f59e0b'
-  return '#ef4444'
+function formatRiverStatus(status) {
+  if (!status) return '—'
+  const s = String(status).toLowerCase()
+  if (s === 'clean') return 'Clean'
+  if (s === 'slightly_polluted' || s === 'slightly polluted') return 'Slightly polluted'
+  if (s === 'polluted') return 'Polluted'
+  return status.replace(/_/g, ' ')
 }
 
 function StationMarkers({ stations, onStationClick }) {
@@ -24,20 +27,39 @@ function StationMarkers({ stations, onStationClick }) {
       key={s.station_code || s.id}
       position={[s.latitude ?? 4.2105, s.longitude ?? 101.9758]}
       icon={defaultIcon}
-      eventHandlers={onStationClick ? { click: () => onStationClick(s) } : undefined}
+      eventHandlers={
+        onStationClick
+          ? {
+              click: () => onStationClick(s),
+            }
+          : undefined
+      }
     >
       <Popup>
-        <div className="text-sm">
-          <p className="font-semibold">{s.station_name || s.station_code}</p>
-          <p>WQI: {s.latest_wqi != null ? Number(s.latest_wqi).toFixed(1) : '—'}</p>
-          <p className="capitalize text-surface-600">{s.river_status || '—'}</p>
+        <div className="min-w-[180px] text-sm">
+          <p className="font-semibold text-surface-900 border-b border-surface-200 pb-1.5 mb-2">
+            Station name
+          </p>
+          <p className="text-surface-800">{s.station_name || s.station_code || '—'}</p>
+          <p className="font-semibold text-surface-900 border-b border-surface-200 pb-1.5 mt-3 mb-2">
+            Latest WQI
+          </p>
+          <p className="text-surface-800">
+            {s.latest_wqi != null ? Number(s.latest_wqi).toFixed(1) : '—'}
+          </p>
+          <p className="font-semibold text-surface-900 border-b border-surface-200 pb-1.5 mt-3 mb-2">
+            River status
+          </p>
+          <p className="text-surface-800 capitalize">
+            {formatRiverStatus(s.river_status)}
+          </p>
           {onStationClick && (
             <button
               type="button"
-              className="mt-2 text-river-600 hover:underline font-medium"
+              className="mt-3 w-full rounded-lg bg-river-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-river-700"
               onClick={() => onStationClick(s)}
             >
-              View history →
+              View chart & table →
             </button>
           )}
         </div>

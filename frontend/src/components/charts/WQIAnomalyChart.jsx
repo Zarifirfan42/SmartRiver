@@ -27,13 +27,20 @@ const options = {
   maintainAspectRatio: false,
   plugins: {
     legend: { position: 'top' },
+    title: {
+      display: true,
+      text: 'WQI with Anomalies (Abnormal Spike)',
+      font: { size: 14 },
+    },
   },
   scales: {
     x: {
+      title: { display: true, text: 'Date', font: { size: 12 } },
       grid: { display: false },
       ticks: { maxTicksLimit: 12 },
     },
     y: {
+      title: { display: true, text: 'WQI', font: { size: 12 } },
       min: 0,
       max: 100,
       grid: { color: '#e2e8f0' },
@@ -54,10 +61,43 @@ export default function WQIAnomalyChart({ data = [], anomalies = [], height = 32
   const anomalyKeySet = new Set(
     (anomalies || []).map((a) => `${String(a.date || '').trim()}|${String(a.station_code || '').trim()}`)
   )
+  const anomalyByIndex = new Map()
   const anomalyValues = data.map((d, i) => {
     const key = `${String(d.date || '').trim()}|${String(d.station_code || '').trim()}`
-    return anomalyKeySet.has(key) ? (d.wqi ?? d.value) : null
+    const isAnomaly = anomalyKeySet.has(key)
+    if (isAnomaly) {
+      const a = (anomalies || []).find(
+        (an) => `${String(an.date || '').trim()}|${String(an.station_code || '').trim()}` === key
+      )
+      if (a) anomalyByIndex.set(i, a)
+    }
+    return isAnomaly ? (d.wqi ?? d.value) : null
   })
+
+  const chartOptions = {
+    ...options,
+    plugins: {
+      ...options.plugins,
+      tooltip: {
+        callbacks: {
+          label: (context) => {
+            const idx = context.dataIndex
+            const a = anomalyByIndex.get(idx)
+            const isAnomalyDataset = context.dataset.label === 'Anomaly (abnormal spike)'
+            if (isAnomalyDataset && a) {
+              return [
+                `Date: ${a.date || labels[idx] || '—'}`,
+                `Station: ${a.station_code || '—'}`,
+                `WQI: ${a.wqi != null ? Number(a.wqi).toFixed(1) : '—'}`,
+                `Reason: ${a.reason || 'Abnormal spike'}`,
+              ]
+            }
+            return `${context.dataset.label}: ${context.parsed.y}`
+          },
+        },
+      },
+    },
+  }
 
   const chartData = {
     labels,
@@ -88,7 +128,7 @@ export default function WQIAnomalyChart({ data = [], anomalies = [], height = 32
 
   return (
     <div style={{ height }}>
-      <Line data={chartData} options={options} />
+      <Line data={chartData} options={chartOptions} />
     </div>
   )
 }

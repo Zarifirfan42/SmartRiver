@@ -19,7 +19,15 @@ export default function RegisterPage() {
       await register(email, password, fullName)
       navigate('/dashboard', { replace: true })
     } catch (err) {
-      setError(err.response?.data?.detail || err.message || 'Registration failed')
+      const isNetworkError = !err.response && (err.code === 'ERR_NETWORK' || err.message === 'Network Error')
+      const is404 = err.response?.status === 404
+      setError(
+        is404
+          ? 'Registration service unavailable. Make sure the backend is running (see HOW_TO_RUN.md), then try again.'
+          : isNetworkError
+            ? 'Cannot connect to the server. Start the backend first (see HOW_TO_RUN.md): run "python -m uvicorn backend.app.main:app --reload --port 8000" from the project root.'
+            : (err.response?.data?.detail || err.message || 'Registration failed')
+      )
     } finally {
       setLoading(false)
     }
