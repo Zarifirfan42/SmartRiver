@@ -3,11 +3,11 @@
  * Summary, Station WQI Trend (line), Forecast, Anomaly, Dataset table, Map, Export.
  */
 import { useState, useEffect } from 'react'
+import { useAuth } from '../context/AuthContext'
 import { DashboardSummary } from '../dashboard'
 import TimeSeriesChart from '../components/charts/TimeSeriesChart'
 import ForecastChart from '../components/charts/ForecastChart'
 import WQIAnomalyChart from '../components/charts/WQIAnomalyChart'
-import RiverHealthIndicator from '../components/dashboard/RiverHealthIndicator'
 import RiverMap from '../components/map/RiverMap'
 import DatasetTable from '../components/dataset/DatasetTable'
 import * as dashboardApi from '../api/dashboard'
@@ -62,6 +62,7 @@ function exportPrint(rows) {
 }
 
 export default function Dashboard() {
+  const { isAdmin } = useAuth()
   const [summary, setSummary] = useState({
     totalStations: 0,
     avgWqi: 0,
@@ -119,7 +120,7 @@ export default function Dashboard() {
         setYears(Array.isArray(yearList) ? yearList : [])
         if (st.length > 0 && !trendStation) setTrendStation(st[0].station_name || st[0].station_code)
         if (st.length > 0 && !forecastStation) setForecastStation(st[0].station_name || st[0].station_code)
-        if (st.length > 0 && !anomalyStation) setAnomalyStation(st[0].station_name || st[0].station_code)
+        if (isAdmin && st.length > 0 && !anomalyStation) setAnomalyStation(st[0].station_name || st[0].station_code)
       } catch (err) {
         if (!cancelled) setError(err.message || 'Failed to load dashboard')
       } finally {
@@ -157,6 +158,7 @@ export default function Dashboard() {
   }, [forecastStation, forecastRange, stations.length])
 
   useEffect(() => {
+    if (!isAdmin) return
     let cancelled = false
     const station = anomalyStation || (stations[0]?.station_name || stations[0]?.station_code)
     if (!station) return
@@ -170,7 +172,7 @@ export default function Dashboard() {
       }
     }).catch(() => { if (!cancelled) { setAnomalyTimeSeries([]); setAnomalies([]) } })
     return () => { cancelled = true }
-  }, [anomalyStation, stations.length])
+  }, [isAdmin, anomalyStation, stations.length])
 
   return (
     <div className="space-y-6">
@@ -191,8 +193,48 @@ export default function Dashboard() {
         predictedAvgWqi2025_2028={summary.predictedAvgWqi2025_2028}
       />
 
+      {/* Monitoring stations map */}
+      <div className="mt-6 rounded-xl border border-slate-200 bg-white p-0 overflow-hidden shadow-sm">
+        <div className="px-5 py-3 border-b border-slate-200">
+          <h2 className="font-display font-semibold text-surface-800">Monitoring Stations Map</h2>
+          <p className="text-sm text-surface-500">Station name, latest WQI, and river status from dataset.</p>
+        </div>
+        <RiverMap stations={stations} height={360} useDefaultStations={stations.length === 0} />
+      </div>
+
+      {/* Export Report — CSV, PDF, Print */}
+      <div className="mt-6 rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+        <h2 className="font-display font-semibold text-surface-800 mb-4">Export Report</h2>
+        <p className="text-sm text-surface-500 mb-4">Download or print report: Station, Date, WQI, River Status.</p>
+        <div className="flex flex-wrap gap-3">
+          <button
+            type="button"
+            onClick={() => exportCsv(exportData)}
+            className="btn-primary"
+          >
+            Download CSV
+          </button>
+          <button
+            type="button"
+            onClick={() => exportPrint(exportData)}
+            className="btn-secondary"
+          >
+            Print Report
+          </button>
+          <span className="text-sm text-surface-500 self-center">PDF: use Print → Save as PDF in the print dialog.</span>
+        </div>
+      </div>
+
+      <div className="mt-6">
+        <DatasetTable
+          title="Dataset table"
+          description="Station Name, Date, WQI, River Status. Filter by station, date range, and river status; sort by WQI or date. All records from dataset."
+          onDataChange={setExportData}
+        />
+      </div>
+
       {/* Station WQI Trend — Line chart, filter by station and year */}
-      <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+      <div className="mt-6 rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
         <h2 className="font-display font-semibold text-surface-800 mb-4">Station WQI Trend</h2>
         <p className="text-sm text-surface-500 mb-4">X-axis: Date. Y-axis: WQI value. Data from dataset only; chronological, no duplicated dates.</p>
         <div className="flex flex-wrap gap-4 mb-4">
@@ -233,7 +275,7 @@ export default function Dashboard() {
       </div>
 
       {/* Forecast — Station + range; Historical (solid) + Forecast (dashed) */}
-      <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+      <div className="mt-6 rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
         <h2 className="font-display font-semibold text-surface-800 mb-4">Forecast Trend</h2>
         <p className="text-sm text-surface-500 mb-4">Historical WQI (solid line) and Predicted WQI (dashed line). X-axis: chronological dates.</p>
         <div className="flex flex-wrap gap-4 mb-4">
@@ -275,100 +317,63 @@ export default function Dashboard() {
         )}
       </div>
 
-      {/* Anomaly — Per station: chart + table */}
-      <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
-        <h2 className="font-display font-semibold text-surface-800 mb-4">Anomaly Detection</h2>
-        <p className="text-sm text-surface-500 mb-4">Select station. Anomalies (abnormal spikes) are marked on the chart and listed in the table.</p>
-        <div className="mb-4">
-          <label className="label">Station name</label>
-          <select
-            value={anomalyStation}
-            onChange={(e) => setAnomalyStation(e.target.value)}
-            className="input-field w-auto min-w-[200px]"
-          >
-            {stations.map((s) => (
-              <option key={s.station_code} value={s.station_name || s.station_code}>
-                {s.station_name || s.station_code}
-              </option>
-            ))}
-          </select>
-        </div>
-        <div className="mb-4">
-          <h3 className="font-medium text-surface-700 mb-2">Anomaly Chart</h3>
-          {anomalyTimeSeries.length > 0 ? (
-            <WQIAnomalyChart data={anomalyTimeSeries} anomalies={anomalies} height={300} />
-          ) : (
-            <div className="h-[300px] flex items-center justify-center text-surface-500">No time series for this station.</div>
-          )}
-        </div>
-        <div>
-          <h3 className="font-medium text-surface-700 mb-2">Anomaly Table</h3>
-          <div className="overflow-x-auto rounded-lg border border-surface-200">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="bg-surface-100 text-left">
-                  <th className="px-4 py-2 font-medium text-surface-700">Station</th>
-                  <th className="px-4 py-2 font-medium text-surface-700">Date</th>
-                  <th className="px-4 py-2 font-medium text-surface-700">WQI</th>
-                  <th className="px-4 py-2 font-medium text-surface-700">Reason</th>
-                </tr>
-              </thead>
-              <tbody>
-                {anomalies.length === 0 ? (
-                  <tr><td colSpan={4} className="px-4 py-6 text-center text-surface-500">No anomalies for this station.</td></tr>
-                ) : (
-                  anomalies.map((a, i) => (
-                    <tr key={i} className="border-t border-surface-100">
-                      <td className="px-4 py-2 text-surface-800">{a.station_name || a.station_code || '—'}</td>
-                      <td className="px-4 py-2 text-surface-800">{a.date || '—'}</td>
-                      <td className="px-4 py-2">{a.wqi != null ? Number(a.wqi).toFixed(1) : '—'}</td>
-                      <td className="px-4 py-2 text-amber-700">{a.reason || 'Abnormal spike'}</td>
-                    </tr>
-                  ))
-                )}
-              </tbody>
-            </table>
+      {isAdmin && (
+        <div className="mt-6 rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+          <h2 className="font-display font-semibold text-surface-800 mb-4">Anomaly Detection</h2>
+          <p className="text-sm text-surface-500 mb-4">Select station. Anomalies (abnormal spikes) are marked on the chart and listed in the table.</p>
+          <div className="mb-4">
+            <label className="label">Station name</label>
+            <select
+              value={anomalyStation}
+              onChange={(e) => setAnomalyStation(e.target.value)}
+              className="input-field w-auto min-w-[200px]"
+            >
+              {stations.map((s) => (
+                <option key={s.station_code} value={s.station_name || s.station_code}>
+                  {s.station_name || s.station_code}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div className="mb-4">
+            <h3 className="font-medium text-surface-700 mb-2">Anomaly Chart</h3>
+            {anomalyTimeSeries.length > 0 ? (
+              <WQIAnomalyChart data={anomalyTimeSeries} anomalies={anomalies} height={300} />
+            ) : (
+              <div className="h-[300px] flex items-center justify-center text-surface-500">No time series for this station.</div>
+            )}
+          </div>
+          <div>
+            <h3 className="font-medium text-surface-700 mb-2">Anomaly Table</h3>
+            <div className="overflow-x-auto rounded-lg border border-surface-200">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="bg-surface-100 text-left">
+                    <th className="px-4 py-2 font-medium text-surface-700">Station</th>
+                    <th className="px-4 py-2 font-medium text-surface-700">Date</th>
+                    <th className="px-4 py-2 font-medium text-surface-700">WQI</th>
+                    <th className="px-4 py-2 font-medium text-surface-700">Reason</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {anomalies.length === 0 ? (
+                    <tr><td colSpan={4} className="px-4 py-6 text-center text-surface-500">No anomalies for this station.</td></tr>
+                  ) : (
+                    anomalies.map((a, i) => (
+                      <tr key={i} className="border-t border-surface-100">
+                        <td className="px-4 py-2 text-surface-800">{a.station_name || a.station_code || '—'}</td>
+                        <td className="px-4 py-2 text-surface-800">{a.date || '—'}</td>
+                        <td className="px-4 py-2">{a.wqi != null ? Number(a.wqi).toFixed(1) : '—'}</td>
+                        <td className="px-4 py-2 text-amber-700">{a.reason || 'Abnormal spike'}</td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
+            </div>
           </div>
         </div>
-      </div>
-
-      <DatasetTable
-        title="Dataset table"
-        description="Station Name, Date, WQI, River Status. Filter by station, date range, and river status; sort by WQI or date. All records from dataset."
-        onDataChange={setExportData}
-      />
-
-      {/* Monitoring stations map */}
-      <div className="rounded-xl border border-slate-200 bg-white p-0 overflow-hidden shadow-sm">
-        <div className="px-5 py-3 border-b border-slate-200">
-          <h2 className="font-display font-semibold text-surface-800">Monitoring Stations Map</h2>
-          <p className="text-sm text-surface-500">Station name, latest WQI, and river status from dataset.</p>
-        </div>
-        <RiverMap stations={stations} height={360} useDefaultStations={stations.length === 0} />
-      </div>
-
-      {/* Export Report — CSV, PDF, Print */}
-      <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
-        <h2 className="font-display font-semibold text-surface-800 mb-4">Export Report</h2>
-        <p className="text-sm text-surface-500 mb-4">Download or print report: Station, Date, WQI, River Status.</p>
-        <div className="flex flex-wrap gap-3">
-          <button
-            type="button"
-            onClick={() => exportCsv(exportData)}
-            className="btn-primary"
-          >
-            Download CSV
-          </button>
-          <button
-            type="button"
-            onClick={() => exportPrint(exportData)}
-            className="btn-secondary"
-          >
-            Print Report
-          </button>
-          <span className="text-sm text-surface-500 self-center">PDF: use Print → Save as PDF in the print dialog.</span>
-        </div>
-      </div>
+      )}
     </div>
   )
 }
