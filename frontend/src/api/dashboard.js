@@ -29,6 +29,15 @@ export async function getAlerts(params = {}) {
   return data.items || []
 }
 
+/** Historical alerts (latest first) and Forecast alerts (earliest first). */
+export async function getAlertsByType(params = {}) {
+  const { data } = await api.get('/alerts/by-type', { params })
+  return {
+    historical: data.historical || [],
+    forecast: data.forecast || [],
+  }
+}
+
 export async function getAnomalies(params = {}) {
   const { data } = await api.get('/dashboard/anomalies', { params })
   return data.anomalies || []
@@ -42,6 +51,11 @@ export async function getWqiData(params = {}) {
 export async function getReadingsTable(params = {}) {
   const { data } = await api.get('/dashboard/readings-table', { params })
   return data.data || []
+}
+
+export async function getReadingsCount(params = {}) {
+  const { data } = await api.get('/dashboard/readings-count', { params })
+  return data.total ?? 0
 }
 
 export async function getYears() {

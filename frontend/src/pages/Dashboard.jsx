@@ -9,6 +9,7 @@ import ForecastChart from '../components/charts/ForecastChart'
 import WQIAnomalyChart from '../components/charts/WQIAnomalyChart'
 import RiverHealthIndicator from '../components/dashboard/RiverHealthIndicator'
 import RiverMap from '../components/map/RiverMap'
+import DatasetTable from '../components/dataset/DatasetTable'
 import * as dashboardApi from '../api/dashboard'
 
 function formatStatus(s) {
@@ -67,6 +68,7 @@ export default function Dashboard() {
     cleanCount: 0,
     pollutedCount: 0,
     slightlyPollutedCount: 0,
+    predictedAvgWqi2025_2028: 0,
   })
   const [stations, setStations] = useState([])
   const [years, setYears] = useState([])
@@ -89,14 +91,7 @@ export default function Dashboard() {
   const [anomalies, setAnomalies] = useState([])
   const [anomalyTimeSeries, setAnomalyTimeSeries] = useState([])
 
-  // Dataset table
-  const [tableStation, setTableStation] = useState('')
-  const [tableYear, setTableYear] = useState('')
-  const [tableSortBy, setTableSortBy] = useState('date')
-  const [tableSortOrder, setTableSortOrder] = useState('asc')
-  const [tableData, setTableData] = useState([])
-
-  // Export
+  // Export — uses filtered dataset table rows (no extra reload)
   const [exportData, setExportData] = useState([])
 
   useEffect(() => {
@@ -117,6 +112,7 @@ export default function Dashboard() {
           cleanCount: s.cleanCount ?? 0,
           pollutedCount: s.pollutedCount ?? 0,
           slightlyPollutedCount: s.slightlyPollutedCount ?? 0,
+          predictedAvgWqi2025_2028: s.predictedAvgWqi2025_2028 ?? 0,
         })
         const st = Array.isArray(stationList) ? stationList : []
         setStations(st)
@@ -176,24 +172,6 @@ export default function Dashboard() {
     return () => { cancelled = true }
   }, [anomalyStation, stations.length])
 
-  useEffect(() => {
-    let cancelled = false
-    dashboardApi.getReadingsTable({
-      station_name: tableStation || undefined,
-      year: tableYear || undefined,
-      sort_by: tableSortBy,
-      sort_order: tableSortOrder,
-      limit: 2000,
-    }).then((data) => {
-      if (!cancelled) setTableData(Array.isArray(data) ? data : [])
-    }).catch(() => { if (!cancelled) setTableData([]) })
-    return () => { cancelled = true }
-  }, [tableStation, tableYear, tableSortBy, tableSortOrder])
-
-  useEffect(() => {
-    dashboardApi.getWqiData({ limit: 5000 }).then((data) => setExportData(Array.isArray(data) ? data : []))
-  }, [])
-
   return (
     <div className="space-y-6">
       <h1 className="text-2xl font-semibold text-slate-900">Dashboard</h1>
@@ -210,6 +188,7 @@ export default function Dashboard() {
         cleanCount={summary.cleanCount}
         pollutedCount={summary.pollutedCount}
         slightlyPollutedCount={summary.slightlyPollutedCount}
+        predictedAvgWqi2025_2028={summary.predictedAvgWqi2025_2028}
       />
 
       {/* Station WQI Trend — Line chart, filter by station and year */}
@@ -353,89 +332,11 @@ export default function Dashboard() {
         </div>
       </div>
 
-      {/* Dataset table — Filter by station, year; sort by WQI */}
-      <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
-        <h2 className="font-display font-semibold text-surface-800 mb-4">Dataset Table</h2>
-        <p className="text-sm text-surface-500 mb-4">Station Name, Date, WQI, River Status. Filter and sort from dataset.</p>
-        <div className="flex flex-wrap gap-4 mb-4">
-          <div>
-            <label className="label">Filter by station</label>
-            <select
-              value={tableStation}
-              onChange={(e) => setTableStation(e.target.value)}
-              className="input-field w-auto min-w-[180px]"
-            >
-              <option value="">All</option>
-              {stations.map((s) => (
-                <option key={s.station_code} value={s.station_name || s.station_code}>
-                  {s.station_name || s.station_code}
-                </option>
-              ))}
-            </select>
-          </div>
-          <div>
-            <label className="label">Filter by year</label>
-            <select
-              value={tableYear}
-              onChange={(e) => setTableYear(e.target.value)}
-              className="input-field w-auto min-w-[100px]"
-            >
-              <option value="">All</option>
-              {years.map((y) => (
-                <option key={y} value={y}>{y}</option>
-              ))}
-            </select>
-          </div>
-          <div>
-            <label className="label">Sort by</label>
-            <select
-              value={tableSortBy}
-              onChange={(e) => setTableSortBy(e.target.value)}
-              className="input-field w-auto min-w-[100px]"
-            >
-              <option value="date">Date</option>
-              <option value="wqi">WQI</option>
-            </select>
-          </div>
-          <div>
-            <label className="label">Order</label>
-            <select
-              value={tableSortOrder}
-              onChange={(e) => setTableSortOrder(e.target.value)}
-              className="input-field w-auto min-w-[100px]"
-            >
-              <option value="asc">Ascending</option>
-              <option value="desc">Descending</option>
-            </select>
-          </div>
-        </div>
-        <div className="overflow-x-auto rounded-lg border border-surface-200">
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="bg-surface-100 text-left">
-                <th className="px-4 py-2 font-medium text-surface-700">Station Name</th>
-                <th className="px-4 py-2 font-medium text-surface-700">Date</th>
-                <th className="px-4 py-2 font-medium text-surface-700">WQI</th>
-                <th className="px-4 py-2 font-medium text-surface-700">River Status</th>
-              </tr>
-            </thead>
-            <tbody>
-              {tableData.length === 0 ? (
-                <tr><td colSpan={4} className="px-4 py-8 text-center text-surface-500">No data.</td></tr>
-              ) : (
-                tableData.map((r, i) => (
-                  <tr key={i} className="border-t border-surface-100">
-                    <td className="px-4 py-2 font-medium text-surface-800">{r.station_name || '—'}</td>
-                    <td className="px-4 py-2 text-surface-800">{r.date || '—'}</td>
-                    <td className="px-4 py-2">{r.wqi != null ? Number(r.wqi).toFixed(1) : '—'}</td>
-                    <td className="px-4 py-2"><RiverHealthIndicator wqi={r.wqi} compact /></td>
-                  </tr>
-                ))
-              )}
-            </tbody>
-          </table>
-        </div>
-      </div>
+      <DatasetTable
+        title="Dataset table"
+        description="Station Name, Date, WQI, River Status. Filter by station, date range, and river status; sort by WQI or date. All records from dataset."
+        onDataChange={setExportData}
+      />
 
       {/* Monitoring stations map */}
       <div className="rounded-xl border border-slate-200 bg-white p-0 overflow-hidden shadow-sm">

@@ -11,6 +11,7 @@ from backend.db.repository import (
     get_latest_anomalies,
     get_wqi_data,
     get_readings_table,
+    get_readings_count,
     get_available_years,
 )
 
@@ -36,9 +37,12 @@ def dashboard_time_series(
 @router.get("/forecast")
 def dashboard_forecast(
     station_code: str = Query(None, description="Station name for forecast"),
-    limit: int = Query(30, ge=1, le=100),
+    year_from: int = Query(None, description="Forecast year from (2025-2028)"),
+    year_to: int = Query(None, description="Forecast year to (2025-2028)"),
+    limit: int = Query(5000, ge=1, le=10000),
 ):
-    return {"forecast": get_latest_forecast(station_code=station_code, limit=limit)}
+    """Forecast predictions for 2025-2028 only. Historical data (2023-2024) comes from time-series endpoint."""
+    return {"forecast": get_latest_forecast(station_code=station_code, limit=limit, year_from=year_from, year_to=year_to)}
 
 
 @router.get("/stations")
@@ -75,9 +79,10 @@ def dashboard_readings_table(
     date_to: str = Query(None, description="To date YYYY-MM-DD"),
     sort_by: str = Query("date", description="Sort by 'date' or 'wqi'"),
     sort_order: str = Query("asc", description="'asc' or 'desc'"),
-    limit: int = Query(2000, ge=1, le=5000),
+    limit: int = Query(50, ge=1, le=100000),
+    offset: int = Query(0, ge=0),
 ):
-    """Dataset table: Station Name, Date, WQI, River Status. For dashboard and River Health."""
+    """Dataset table: Station Name, Date, WQI, River Status. Pagination via limit/offset. All dataset records available."""
     return {
         "data": get_readings_table(
             station_name=station_name,
@@ -88,8 +93,21 @@ def dashboard_readings_table(
             sort_by=sort_by,
             sort_order=sort_order,
             limit=limit,
+            offset=offset,
         )
     }
+
+
+@router.get("/readings-count")
+def dashboard_readings_count(
+    station_name: str = Query(None),
+    year: int = Query(None),
+    status: str = Query(None),
+    date_from: str = Query(None),
+    date_to: str = Query(None),
+):
+    """Total count of readings matching filters (for pagination)."""
+    return {"total": get_readings_count(station_name=station_name, year=year, status=status, date_from=date_from, date_to=date_to)}
 
 
 @router.get("/years")

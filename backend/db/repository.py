@@ -124,7 +124,18 @@ def save_prediction_log(
     return row
 
 
-def save_alert(station_code: str, message: str, severity: str = "warning", prediction_log_id: Optional[int] = None) -> dict:
+def save_alert(
+    station_code: str,
+    message: str,
+    severity: str = "warning",
+    prediction_log_id: Optional[int] = None,
+    wqi: Optional[float] = None,
+    date_str: Optional[str] = None,
+    alert_type: Optional[str] = None,
+    river_status: Optional[str] = None,
+    station_name: Optional[str] = None,
+) -> dict:
+    """Create an alert row. alert_type: 'historical' | 'forecast'. Optionally WQI, date, river_status, station_name."""
     row = {
         "id": _next_id("alerts"),
         "prediction_log_id": prediction_log_id,
@@ -134,12 +145,30 @@ def save_alert(station_code: str, message: str, severity: str = "warning", predi
         "is_read": False,
         "created_at": datetime.utcnow().isoformat(),
     }
+    if alert_type:
+        row["alert_type"] = str(alert_type).strip().lower()
+    if wqi is not None:
+        try:
+            row["wqi"] = float(wqi)
+        except (TypeError, ValueError):
+            pass
+    if date_str:
+        row["date"] = str(date_str)[:10]
+    if river_status:
+        row["river_status"] = str(river_status).strip()
+    if station_name:
+        row["station_name"] = str(station_name).strip()
     _store["alerts"].append(row)
     return row
 
 
 def get_summary() -> dict:
-    """Dashboard summary from readings. Station count = unique stations in dataset (no fixed list)."""
+    """
+    Dashboard summary using LATEST record per station only (not entire dataset).
+    For each station: find latest date, use that row as current monitoring record.
+    Then compute: total stations, average WQI (latest), status distribution (Clean / Slightly Polluted / Polluted).
+    """
+    from collections import defaultdict
     readings = _store["readings"]
     if not readings:
         return {
@@ -149,20 +178,61 @@ def get_summary() -> dict:
             "slightlyPollutedCount": 0,
             "pollutedCount": 0,
             "recentAnomaliesCount": len([a for a in _store["alerts"] if not a.get("is_read")]),
+            "predictedAvgWqi2025_2028": get_predicted_avg_wqi_2025_2028(),
         }
-    unique_station_codes = set(r["station_code"] for r in readings)
-    wqis = [r["wqi"] for r in readings]
-    clean = sum(1 for w in wqis if w >= 81)
-    slight = sum(1 for w in wqis if 60 <= w < 81)
-    polluted = sum(1 for w in wqis if w < 60)
+    by_station = defaultdict(list)
+    for r in readings:
+        key = r.get("station_name") or r.get("station_code", "")
+        if key:
+            by_station[key].append(r)
+    latest_records = []
+    for _name, rows in by_station.items():
+        rows = sorted(rows, key=lambda x: x.get("reading_date", ""))
+        if rows:
+            latest_records.append(rows[-1])
+    if not latest_records:
+        return {
+            "totalStations": 0,
+            "avgWqi": 0,
+            "cleanCount": 0,
+            "slightlyPollutedCount": 0,
+            "pollutedCount": 0,
+            "recentAnomaliesCount": len([a for a in _store["alerts"] if not a.get("is_read")]),
+            "predictedAvgWqi2025_2028": get_predicted_avg_wqi_2025_2028(),
+        }
+    wqis = [r["wqi"] for r in latest_records]
+    clean = sum(1 for r in latest_records if _status_from_reading(r) == "clean")
+    slight = sum(1 for r in latest_records if _status_from_reading(r) == "slightly_polluted")
+    polluted = sum(1 for r in latest_records if _status_from_reading(r) == "polluted")
     return {
-        "totalStations": len(unique_station_codes),
+        "totalStations": len(latest_records),
         "avgWqi": sum(wqis) / len(wqis) if wqis else 0,
         "cleanCount": clean,
         "slightlyPollutedCount": slight,
         "pollutedCount": polluted,
         "recentAnomaliesCount": len([a for a in _store["alerts"] if not a.get("is_read")]),
+        "predictedAvgWqi2025_2028": get_predicted_avg_wqi_2025_2028(),
     }
+
+
+def _status_from_reading(r: dict) -> str:
+    """Normalize river status from a reading (explicit or from WQI)."""
+    st = r.get("river_status")
+    if st:
+        s = str(st).strip().lower().replace(" ", "_")
+        if s in ("clean", "slightly_polluted", "polluted"):
+            return s
+    w = r.get("wqi", 0)
+    return "clean" if w >= 81 else ("slightly_polluted" if w >= 60 else "polluted")
+
+
+def get_predicted_avg_wqi_2025_2028() -> float:
+    """Average of predicted WQI for 2025-2028 (from latest forecast run)."""
+    forecast = get_latest_forecast(limit=10000)
+    if not forecast:
+        return 0.0
+    wqis = [float(f.get("wqi", 0)) for f in forecast if f.get("wqi") is not None]
+    return sum(wqis) / len(wqis) if wqis else 0.0
 
 
 def get_time_series(station_code: Optional[str] = None, station_name: Optional[str] = None, year: Optional[int] = None, limit: int = 100) -> list[dict]:
@@ -236,18 +306,15 @@ def get_wqi_data(
     return out
 
 
-def get_readings_table(
+def _apply_readings_filters(
+    readings: list,
     station_name: Optional[str] = None,
     year: Optional[int] = None,
     status: Optional[str] = None,
     date_from: Optional[str] = None,
     date_to: Optional[str] = None,
-    sort_by: str = "date",
-    sort_order: str = "asc",
-    limit: int = 2000,
-) -> list[dict]:
-    """Dataset table: Station Name, Date, WQI, River Status. Filter by station, year, status, date range; sort by WQI or date."""
-    readings = list(_store["readings"])
+):
+    """Apply filters to readings list (in place). Returns filtered list."""
     if station_name:
         readings = [r for r in readings if (r.get("station_name") or r.get("station_code")) == station_name]
     if year is not None:
@@ -265,10 +332,40 @@ def get_readings_table(
         readings = [r for r in readings if (r.get("reading_date") or "") >= date_from[:10]]
     if date_to:
         readings = [r for r in readings if (r.get("reading_date") or "") <= date_to[:10]]
+    return readings
+
+
+def get_readings_count(
+    station_name: Optional[str] = None,
+    year: Optional[int] = None,
+    status: Optional[str] = None,
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+) -> int:
+    """Total number of readings matching filters (for pagination)."""
+    readings = list(_store["readings"])
+    readings = _apply_readings_filters(readings, station_name=station_name, year=year, status=status, date_from=date_from, date_to=date_to)
+    return len(readings)
+
+
+def get_readings_table(
+    station_name: Optional[str] = None,
+    year: Optional[int] = None,
+    status: Optional[str] = None,
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    sort_by: str = "date",
+    sort_order: str = "asc",
+    limit: int = 100000,
+    offset: int = 0,
+) -> list[dict]:
+    """Dataset table: Station Name, Date, WQI, River Status. Filter, sort, paginate. Returns ALL matching rows when limit is high; use offset for pagination."""
+    readings = list(_store["readings"])
+    readings = _apply_readings_filters(readings, station_name=station_name, year=year, status=status, date_from=date_from, date_to=date_to)
     key = "wqi" if sort_by == "wqi" else "reading_date"
     reverse = sort_order.lower() == "desc"
     readings = sorted(readings, key=lambda x: (x.get(key) if key == "wqi" else x.get(key) or ""), reverse=reverse)
-    readings = readings[:limit]
+    readings = readings[offset : offset + limit]
     out = []
     for r in readings:
         st = r.get("river_status")
@@ -297,8 +394,8 @@ def get_available_years() -> list[int]:
     return sorted(years)
 
 
-def get_latest_forecast(station_code: Optional[str] = None, limit: int = 30) -> list[dict]:
-    """Latest forecast from prediction_logs (type=forecast). Optional filter by station."""
+def get_latest_forecast(station_code: Optional[str] = None, limit: int = 10000, year_from: Optional[int] = None, year_to: Optional[int] = None) -> list[dict]:
+    """Latest forecast from prediction_logs (type=forecast). Optional filter by station and year range (2025-2028)."""
     logs = [l for l in _store["prediction_logs"] if l["prediction_type"] == "forecast"]
     if not logs:
         return []
@@ -306,14 +403,48 @@ def get_latest_forecast(station_code: Optional[str] = None, limit: int = 30) -> 
     forecast = latest.get("result_json", {}).get("forecast", [])
     if station_code:
         forecast = [f for f in forecast if f.get("station_code") == station_code or f.get("station_name") == station_code]
+    if year_from is not None:
+        forecast = [f for f in forecast if (f.get("date") or "")[:4] and int((f.get("date") or "0")[:4]) >= year_from]
+    if year_to is not None:
+        forecast = [f for f in forecast if (f.get("date") or "")[:4] and int((f.get("date") or "0")[:4]) <= year_to]
     return forecast[:limit]
 
 
+def clear_historical_alerts() -> None:
+    """Remove all alerts with alert_type='historical'. Used when regenerating from dataset."""
+    _store["alerts"] = [
+        a for a in _store["alerts"]
+        if (a.get("alert_type") or "").lower() != "historical"
+    ]
+
+
 def get_alerts(unread_only: bool = False, limit: int = 50) -> list[dict]:
+    """Return all alerts sorted by event date (latest first). Prefer alert date, fallback to created_at."""
     alerts = _store["alerts"]
     if unread_only:
         alerts = [a for a in alerts if not a.get("is_read")]
-    return sorted(alerts, key=lambda x: x["created_at"], reverse=True)[:limit]
+    def _key(a: dict) -> str:
+        return (a.get("date") or a.get("created_at") or "")
+    return sorted(alerts, key=_key, reverse=True)[:limit]
+
+
+def get_historical_alerts(limit: int = 100) -> list[dict]:
+    """Historical alerts (from latest monitoring data). Sorted by date: latest first."""
+    alerts = [
+        a for a in _store["alerts"]
+        if (a.get("alert_type") or "").lower() == "historical" or a.get("alert_type") is None
+    ]
+    def _key(a: dict) -> str:
+        return (a.get("date") or a.get("created_at") or "")
+    return sorted(alerts, key=_key, reverse=True)[:limit]
+
+
+def get_forecast_alerts(limit: int = 100) -> list[dict]:
+    """Forecast alerts (from prediction results). Sorted by forecast date: earliest first."""
+    alerts = [a for a in _store["alerts"] if (a.get("alert_type") or "").lower() == "forecast"]
+    def _key(a: dict) -> str:
+        return (a.get("date") or a.get("created_at") or "")
+    return sorted(alerts, key=_key, reverse=False)[:limit]
 
 
 def get_latest_dataset() -> Optional[dict]:

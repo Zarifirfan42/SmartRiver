@@ -79,11 +79,6 @@ def run_anomaly_detection(
         else:
             rec["wqi"] = None
         anomalies.append(rec)
-        save_alert(
-            rec["station_code"],
-            "Anomaly detected — abnormal spike",
-            "warning",
-        )
 
     if anomalies:
         save_prediction_log(

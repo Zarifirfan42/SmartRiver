@@ -31,7 +31,14 @@ function App() {
             <Route path="river-health" element={<RiverHealthPage />} />
             <Route path="forecast" element={<PollutionForecastPage />} />
             <Route path="alerts" element={<AlertMonitoringPage />} />
-            <Route path="anomaly-detection" element={<AnomalyDetectionPage />} />
+            <Route
+              path="anomaly-detection"
+              element={
+                <ProtectedRoute requireAdmin>
+                  <AnomalyDetectionPage />
+                </ProtectedRoute>
+              }
+            />
             <Route path="export" element={<Navigate to="/dashboard" replace />} />
             <Route
               path="upload"

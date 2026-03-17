@@ -8,15 +8,43 @@ from typing import Optional
 
 ROOT = Path(__file__).resolve().parents[2]
 
-# Default dataset path (Excel). Fallback to CSV if Excel not found.
+# Default dataset paths: Excel first, then CSV. Include sample_water_quality.csv (has station_code; we map to names and compute WQI if missing).
 DEFAULT_DATASET_PATHS = [
     ROOT / "datasets" / "Lampiran A - Sungai Kulim.xlsx",
     ROOT / "datasets" / "Lampiran A - Sungai Kulim.csv",
+    ROOT / "datasets" / "sample_water_quality.csv",
 ]
 
-# Sungai Kulim area (Kedah, Malaysia). Spread stations around this center for map.
+# Map station codes to display names for CSVs that have no Station Name (e.g. sample_water_quality.csv).
+STATION_CODE_TO_NAME = {
+    "S01": "Sungai Klang",
+    "S02": "Sungai Gombak",
+    "S03": "Sungai Pinang",
+    "S04": "Sungai Kulim",
+    "S05": "Sungai Perak",
+}
+
+# Historical data cutoff: only dates up to and including this year are treated as real measurements.
+# Dates in 2025-2028 are NOT used as observations; they are generated as forecast predictions only.
+HISTORICAL_CUTOFF_YEAR = 2024
+
+# Station coordinates for real river locations (used when station name is known).
+STATION_COORDINATES = {
+    # Sungai Kulim → Kedah
+    "Sungai Kulim": (5.6710, 100.5660),
+    # Sungai Klang → Selangor
+    "Sungai Klang": (3.1390, 101.6869),
+    # Sungai Gombak → Selangor
+    "Sungai Gombak": (3.2330, 101.7240),
+    # Sungai Perak → Perak
+    "Sungai Perak": (4.5921, 101.0901),
+    # Sungai Pinang → Penang
+    "Sungai Pinang": (5.4141, 100.3288),
+}
+
+# Fallback: Sungai Kulim area (Kedah, Malaysia). Spread other stations around this center for map.
 DEFAULT_MAP_CENTER = (5.364, 100.562)
-# Offsets per station index so markers don't overlap
+# Offsets per station index so markers don't overlap (for stations without explicit coordinates).
 STATION_OFFSETS = [(0, 0), (0.02, 0.01), (-0.02, 0.01), (0.01, -0.02), (-0.01, -0.02), (0.03, 0), (-0.03, 0)]
 
 
@@ -44,6 +72,22 @@ def _normalize_river_status(val):
     return None
 
 
+def _compute_wqi_from_params(row) -> float:
+    """Compute WQI from DO, BOD, COD, AN, TSS, pH when WQI column is missing (e.g. sample_water_quality.csv)."""
+    try:
+        do = float(row.get("DO", 7) or 7)
+        bod = float(row.get("BOD", 2) or 2)
+        cod = float(row.get("COD", 10) or 10)
+        an = float(row.get("AN", 0.5) or row.get("NH3-N", 0.5) or 0.5)
+        tss = float(row.get("TSS", 0) or row.get("SS", 0) or 0)
+        ph = float(row.get("pH", 7) or 7)
+        # Simplified proxy: better DO/pH increase score; higher BOD/COD/TSS/AN decrease it. Clamp 0-100.
+        wqi = 100.0 - (bod * 3 + cod / 12 + tss / 4 + an * 8) + (do - 5) * 2 + (ph - 6) * 5
+        return max(0.0, min(100.0, round(wqi, 1)))
+    except (TypeError, ValueError):
+        return 50.0
+
+
 def load_dataset_dataframe(path: Path):
     """Load Excel or CSV into pandas DataFrame. Columns: Station Name, Date, WQI, River Status, BOD, COD, SS, pH, NH3-N."""
     import pandas as pd
@@ -62,8 +106,11 @@ def load_dataset_dataframe(path: Path):
     # Normalize columns to match dataset structure: Station Name, Date, WQI, River Status, BOD, COD, SS, pH, NH3-N
     col_map = {}
     station_name_col = _normalize_column(df, ["Station Name", "Station name", "station_name", "Station", "station", "STATION"])
+    station_code_col = _normalize_column(df, ["station_code", "Station Code", "station code"])
     if station_name_col:
         col_map[station_name_col] = "station_name"
+    if station_code_col:
+        col_map[station_code_col] = "station_code"
     date_col = _normalize_column(df, ["Date", "date", "DATE", "Tarikh"])
     if date_col:
         col_map[date_col] = "date"
@@ -83,14 +130,26 @@ def load_dataset_dataframe(path: Path):
     # Ensure required columns: use station_name as primary (full names e.g. Sungai Pinang, Sungai Klang)
     if "station_name" not in df.columns and station_name_col:
         df["station_name"] = df[station_name_col].astype(str).str.strip()
+    if "station_name" not in df.columns and "station_code" in df.columns:
+        # Map station codes to names (e.g. sample_water_quality.csv: S01 -> Sungai Klang, S03 -> Sungai Pinang)
+        df["station_name"] = df["station_code"].astype(str).str.strip().map(
+            lambda c: STATION_CODE_TO_NAME.get(c, c)
+        )
     if "station_name" not in df.columns:
         df["station_name"] = df.index.astype(str)
     if "date" not in df.columns and date_col:
         df["date"] = df[date_col]
     if "WQI" not in df.columns and wqi_col:
         df["WQI"] = pd.to_numeric(df[wqi_col], errors="coerce").fillna(0)
+    if "WQI" not in df.columns:
+        # Compute WQI from DO, BOD, COD, AN, TSS, pH (e.g. sample_water_quality.csv)
+        df["WQI"] = df.apply(_compute_wqi_from_params, axis=1)
     if "river_status" not in df.columns and status_col:
         df["river_status"] = df[status_col]
+    if "river_status" not in df.columns and "WQI" in df.columns:
+        df["river_status"] = df["WQI"].apply(
+            lambda w: "clean" if w >= 81 else ("slightly_polluted" if w >= 60 else "polluted")
+        )
 
     # Normalize date to string YYYY-MM-DD
     if "date" in df.columns:
@@ -125,6 +184,7 @@ def dataframe_to_readings(df) -> list[dict]:
         if status is not None and not isinstance(status, str):
             status = str(status)
         status = (status or "").strip() or None
+        status = _normalize_river_status(status) if status else None
         if not status:
             status = "clean" if wqi >= 81 else ("slightly_polluted" if wqi >= 60 else "polluted")
         readings.append({
@@ -137,8 +197,31 @@ def dataframe_to_readings(df) -> list[dict]:
     return readings
 
 
+def _normalize_alert_status(river_status, wqi: float) -> str:
+    """Normalize river status for alert logic: accept dataset values like 'Slightly Polluted' or 'slightly_polluted'."""
+    if river_status is not None and str(river_status).strip():
+        s = str(river_status).strip().lower().replace(" ", "_")
+        if "slight" in s or "moderate" in s:
+            return "slightly_polluted"
+        if "pollut" in s:
+            return "polluted"
+        if s == "clean":
+            return "clean"
+    return "clean" if wqi >= 81 else ("slightly_polluted" if wqi >= 60 else "polluted")
+
+
 def get_station_coordinates(station_code: str, index: int) -> tuple[float, float]:
-    """Return (lat, lon) for a station (for map). Uses default area + offset by index."""
+    """Return (lat, lon) for a station (for map).
+
+    If the station matches a known river name (e.g. Sungai Kulim, Sungai Klang),
+    use its real coordinates. Otherwise use the default area + offset by index
+    so markers don't overlap.
+    """
+    name = station_code or ""
+    # Station codes in readings use full station names (dataframe_to_readings sets station_code = station_name).
+    if name in STATION_COORDINATES:
+        return STATION_COORDINATES[name]
+
     base_lat, base_lon = DEFAULT_MAP_CENTER
     off = STATION_OFFSETS[index % len(STATION_OFFSETS)]
     return (base_lat + off[0], base_lon + off[1])
@@ -169,13 +252,24 @@ def load_default_dataset() -> Optional[object]:
 
 def run_startup_data_load():
     """
-    Load default dataset from file, save to repository, seed station coordinates, run anomaly if model exists.
-    Call from app lifespan. User does NOT need to upload; data loads automatically.
+    Load default dataset from file. Only records with year <= HISTORICAL_CUTOFF_YEAR (2024) are stored as historical.
+    Dates 2025-2028 are NOT treated as real measurements; they are generated by the forecast model.
+    Seed station coordinates, run anomaly on historical data, then run forecast to generate 2025-2028 predictions.
     """
-    from backend.db.repository import save_readings, _store, create_station
+    from backend.db.repository import save_readings, _store, create_station, save_alert, clear_historical_alerts
 
     df = load_default_dataset()
     if df is None:
+        return
+
+    # Use only historical data (2023-2024). Do not treat 2025-2028 as observed values.
+    if "date" in df.columns:
+        try:
+            years = df["date"].astype(str).str[:4].astype(int)
+            df = df[years <= HISTORICAL_CUTOFF_YEAR].copy()
+        except (ValueError, TypeError):
+            pass
+    if df.empty:
         return
 
     readings = dataframe_to_readings(df)
@@ -184,7 +278,7 @@ def run_startup_data_load():
 
     save_readings(1, readings)
 
-    # Ensure each station has coordinates in _store["stations"] for the map (from dataset only)
+    # Ensure each station has coordinates in _store["stations"] for the map
     seen = set()
     for i, r in enumerate(readings):
         code = r.get("station_code") or r.get("station_name", "S01")
@@ -199,6 +293,42 @@ def run_startup_data_load():
                 except ValueError:
                     pass
 
+    # Historical alerts: from LATEST record per station only. Trigger when River Status is Slightly Polluted or Polluted.
+    # Clear existing historical alerts so we regenerate from current dataset (forecast alerts are kept).
+    try:
+        from collections import defaultdict
+        clear_historical_alerts()
+        by_station = defaultdict(list)
+        for r in readings:
+            key = r.get("station_name") or r.get("station_code")
+            if key:
+                by_station[key].append(r)
+        for name, rows in by_station.items():
+            rows = sorted(rows, key=lambda x: x.get("date", ""))
+            if not rows:
+                continue
+            latest = rows[-1]
+            date_str = latest.get("date")
+            wqi = float(latest.get("wqi", 0))
+            status = _normalize_alert_status(latest.get("river_status"), wqi)
+            if status not in ("slightly_polluted", "polluted"):
+                continue
+            status_label = "Slightly Polluted" if status == "slightly_polluted" else "Polluted"
+            severity = "warning" if status == "slightly_polluted" else "critical"
+            msg = f"{name} water quality is {status_label} (WQI: {wqi:.1f}) on {date_str}."
+            save_alert(
+                station_code=name,
+                station_name=name,
+                message=msg,
+                severity=severity,
+                wqi=wqi,
+                date_str=date_str,
+                alert_type="historical",
+                river_status=status,
+            )
+    except Exception:
+        pass
+
     try:
         import pandas as pd
         df_for_anomaly = df.copy()
@@ -210,5 +340,12 @@ def run_startup_data_load():
             df_for_anomaly["AN"] = pd.to_numeric(df_for_anomaly["NH3-N"], errors="coerce").fillna(0)
         from backend.services.anomaly_service import run_anomaly_detection
         run_anomaly_detection(df=df_for_anomaly)
+    except Exception:
+        pass
+
+    # Generate forecast predictions for 2025-2028 (per station). Do not use dataset 2025-2028 as real data.
+    try:
+        from backend.services.forecast_service import run_forecast
+        run_forecast()
     except Exception:
         pass

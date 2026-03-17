@@ -1,30 +1,52 @@
 import { NavLink } from 'react-router-dom'
 import { useAuth } from '../../context/AuthContext'
 
-const links = [
-  { to: '/dashboard', label: 'Dashboard' },
-  { to: '/river-health', label: 'River Health' },
-  { to: '/forecast', label: 'Forecast' },
-  { to: '/alerts', label: 'Alerts' },
-  { to: '/anomaly-detection', label: 'Anomaly Detection' },
-  { to: '/export', label: 'Export' },
-]
-
 export default function Sidebar() {
   const { isAdmin } = useAuth()
   return (
     <nav className="space-y-1">
-      {links.map(({ to, label }) => (
+      <NavLink
+        to="/dashboard"
+        className={({ isActive }) =>
+          `block rounded-lg px-3 py-2 text-sm font-medium ${isActive ? 'bg-river-100 text-river-800' : 'text-surface-600 hover:bg-surface-100'}`
+        }
+      >
+        Dashboard
+      </NavLink>
+      <NavLink
+        to="/river-health"
+        className={({ isActive }) =>
+          `block rounded-lg px-3 py-2 text-sm font-medium ${isActive ? 'bg-river-100 text-river-800' : 'text-surface-600 hover:bg-surface-100'}`
+        }
+      >
+        River Health
+      </NavLink>
+      <NavLink
+        to="/forecast"
+        className={({ isActive }) =>
+          `block rounded-lg px-3 py-2 text-sm font-medium ${isActive ? 'bg-river-100 text-river-800' : 'text-surface-600 hover:bg-surface-100'}`
+        }
+      >
+        Forecast
+      </NavLink>
+      <NavLink
+        to="/alerts"
+        className={({ isActive }) =>
+          `block rounded-lg px-3 py-2 text-sm font-medium ${isActive ? 'bg-river-100 text-river-800' : 'text-surface-600 hover:bg-surface-100'}`
+        }
+      >
+        Alerts
+      </NavLink>
+      {isAdmin && (
         <NavLink
-          key={to}
-          to={to}
+          to="/anomaly-detection"
           className={({ isActive }) =>
             `block rounded-lg px-3 py-2 text-sm font-medium ${isActive ? 'bg-river-100 text-river-800' : 'text-surface-600 hover:bg-surface-100'}`
           }
         >
-          {label}
+          Anomaly Detection
         </NavLink>
-      ))}
+      )}
       {isAdmin && (
         <NavLink
           to="/upload"
