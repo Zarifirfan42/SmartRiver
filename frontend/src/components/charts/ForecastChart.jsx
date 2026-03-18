@@ -50,7 +50,7 @@ function formatDayMonth(date) {
   return `${MONTHS[date.getMonth()]} ${date.getDate()}`
 }
 
-const options = {
+const baseOptions = {
   responsive: true,
   maintainAspectRatio: false,
   plugins: {
@@ -80,36 +80,113 @@ const options = {
   },
 }
 
-export default function ForecastChart({ historical = [], forecast = [], height = 280 }) {
-  // Normalize historical: parse date, keep wqi
-  const histWithDates = historical
+/** YYYY-MM-DD to Date at midnight (local). */
+function parseDateOnly(str) {
+  if (!str || typeof str !== 'string') return null
+  const s = str.trim().slice(0, 10)
+  const match = s.match(/^(\d{4})-(\d{2})-(\d{2})/)
+  if (!match) return null
+  const [, y, m, d] = match.map(Number)
+  const d2 = new Date(y, m - 1, d)
+  return Number.isNaN(d2.getTime()) ? null : d2
+}
+
+// Aggregate by granularity: 'daily' | 'monthly' | 'yearly'
+function aggregateSeries(entries, mode) {
+  if (mode === 'daily') {
+    return entries
+  }
+  const buckets = new Map()
+  entries.forEach(({ date, wqi }) => {
+    if (!date || Number.isNaN(date.getTime())) return
+    const y = date.getFullYear()
+    const m = date.getMonth()
+    let key
+    if (mode === 'monthly') {
+      key = `${y}-${String(m + 1).padStart(2, '0')}`
+    } else {
+      key = `${y}`
+    }
+    if (!buckets.has(key)) buckets.set(key, [])
+    buckets.get(key).push(wqi)
+  })
+  const out = []
+  buckets.forEach((values, key) => {
+    const avg = values.reduce((s, v) => s + v, 0) / values.length
+    let d
+    if (mode === 'monthly') {
+      const [y, m] = key.split('-').map(Number)
+      d = new Date(y, m - 1, 1)
+    } else {
+      const y = Number(key)
+      d = new Date(y, 0, 1)
+    }
+    out.push({ date: d, wqi: avg })
+  })
+  out.sort((a, b) => a.date.getTime() - b.date.getTime())
+  return out
+}
+
+export default function ForecastChart({ historical = [], forecast = [], height = 280, today: todayStr, viewMode = 'monthly' }) {
+  // Classify by today: historical ends at today, forecast starts after today (no overlap).
+  const todayDate = todayStr ? parseDateOnly(todayStr) : null
+
+  // Normalize historical: parse date, keep wqi; optionally filter to date <= today
+  let histWithDates = historical
     .map((d) => {
       const dateStr = d.date || d.label
       const parsed = parseDate(dateStr)
       return { date: parsed, wqi: d.wqi ?? d.value }
     })
     .filter((x) => x.date != null)
-    .sort((a, b) => a.date.getTime() - b.date.getTime())
+  if (todayDate) histWithDates = histWithDates.filter((x) => x.date.getTime() <= todayDate.getTime())
+  histWithDates.sort((a, b) => a.date.getTime() - b.date.getTime())
 
-  // Normalize forecast: parse date, keep wqi
-  const fcWithDates = forecast
+  // Normalize forecast: parse date, keep wqi; optionally filter to date > today
+  let fcWithDates = forecast
     .map((d) => {
       const dateStr = d.date || d.label
       const parsed = parseDate(dateStr)
       return { date: parsed, wqi: typeof d === 'number' ? d : (d?.wqi ?? null) }
     })
     .filter((x) => x.date != null && x.wqi != null)
-    .sort((a, b) => a.date.getTime() - b.date.getTime())
+  if (todayDate) fcWithDates = fcWithDates.filter((x) => x.date.getTime() > todayDate.getTime())
+  fcWithDates.sort((a, b) => a.date.getTime() - b.date.getTime())
+
+  // Apply aggregation based on view mode and limit number of points
+  let histAgg = histWithDates
+  let fcAgg = fcWithDates
+  if (viewMode === 'monthly') {
+    histAgg = aggregateSeries(histWithDates, 'monthly')
+    fcAgg = aggregateSeries(fcWithDates, 'monthly')
+    histAgg = histAgg.slice(-36)
+    fcAgg = fcAgg.slice(-36)
+  } else if (viewMode === 'yearly') {
+    histAgg = aggregateSeries(histWithDates, 'yearly')
+    fcAgg = aggregateSeries(fcWithDates, 'yearly')
+    histAgg = histAgg.slice(-10)
+    fcAgg = fcAgg.slice(-10)
+  } else {
+    // daily: up to 365 points max (enough for full year)
+    histAgg = histWithDates.slice(-365)
+    fcAgg = fcWithDates.slice(-365)
+  }
 
   // Single chronological timeline (2023 → 2028): merge and dedupe by date string
   const dateToHist = new Map()
-  histWithDates.forEach(({ date, wqi }) => dateToHist.set(date.getTime(), { type: 'hist', wqi }))
+  histAgg.forEach(({ date, wqi }) => dateToHist.set(date.getTime(), { type: 'hist', wqi }))
   const dateToFc = new Map()
-  fcWithDates.forEach(({ date, wqi }) => dateToFc.set(date.getTime(), { type: 'fc', wqi }))
+  fcAgg.forEach(({ date, wqi }) => dateToFc.set(date.getTime(), { type: 'fc', wqi }))
   const allTimestamps = [...new Set([...dateToHist.keys(), ...dateToFc.keys()])].sort((a, b) => a - b)
   const allDates = allTimestamps.map((t) => new Date(t))
-  const useMonthYear = allDates.length > 12 || (allDates.length > 0 && (allDates[allDates.length - 1].getTime() - allDates[0].getTime()) > 365 * 24 * 60 * 60 * 1000)
-  const allLabels = allDates.map((d) => (useMonthYear ? formatMonthYear(d) : formatDayMonth(d)))
+  let allLabels
+  if (viewMode === 'daily') {
+    allLabels = allDates.map((d) => `${d.getDate().toString().padStart(2, '0')} ${MONTHS[d.getMonth()]} ${d.getFullYear()}`)
+  } else if (viewMode === 'monthly') {
+    allLabels = allDates.map((d) => formatMonthYear(d))
+  } else {
+    allLabels = allDates.map((d) => `${d.getFullYear()}`)
+  }
 
   const histData = allTimestamps.map((t) => (dateToHist.has(t) ? dateToHist.get(t).wqi : null))
   const fcData = allTimestamps.map((t) => (dateToFc.has(t) ? dateToFc.get(t).wqi : null))
@@ -120,25 +197,64 @@ export default function ForecastChart({ historical = [], forecast = [], height =
       {
         label: 'Historical Data',
         data: histData,
-        borderColor: '#475569',
-        backgroundColor: 'rgba(71, 85, 105, 0.08)',
-        fill: true,
+        borderColor: '#94a3b8',
+        backgroundColor: 'rgba(148, 163, 184, 0.16)',
+        borderWidth: 1.5,
+        fill: viewMode === 'daily',
         tension: 0.3,
-        pointRadius: 3,
+        pointRadius: viewMode === 'daily' ? 2 : 0,
         spanGaps: true,
       },
       {
         label: 'Forecast Prediction',
         data: fcData,
-        borderColor: '#0891b2',
-        borderDash: [6, 4],
-        backgroundColor: 'rgba(6, 182, 212, 0.08)',
-        fill: true,
+        borderColor: '#4f46e5',
+        borderDash: [6, 3],
+        backgroundColor: 'rgba(79, 70, 229, 0.12)',
+        borderWidth: 2.5,
+        fill: false,
         tension: 0.3,
-        pointRadius: 3,
+        pointRadius: viewMode === 'daily' ? 3 : 2,
         spanGaps: true,
+        order: 1,
       },
     ],
+  }
+
+  const options = {
+    ...baseOptions,
+    plugins: {
+      ...baseOptions.plugins,
+      tooltip: {
+        callbacks: {
+          title(items) {
+            if (!items || items.length === 0) return ''
+            return items[0].label
+          },
+          label(context) {
+            const value = context.parsed.y
+            if (value == null) return ''
+            const w = Number(value)
+            let status
+            if (w >= 81) status = 'Clean'
+            else if (w >= 60) status = 'Slightly Polluted'
+            else status = 'Polluted'
+            return [`WQI: ${w.toFixed(1)}`, `Status: ${status}`]
+          },
+        },
+      },
+    },
+    scales: {
+      ...baseOptions.scales,
+      x: {
+        ...baseOptions.scales.x,
+        title: {
+          display: true,
+          text: viewMode === 'daily' ? 'Date' : viewMode === 'monthly' ? 'Month' : 'Year',
+          font: { size: 12 },
+        },
+      },
+    },
   }
 
   return (

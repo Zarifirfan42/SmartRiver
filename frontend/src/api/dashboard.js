@@ -11,12 +11,12 @@ export async function getSummary() {
 
 export async function getTimeSeries(params = {}) {
   const { data } = await api.get('/dashboard/time-series', { params })
-  return data.series || []
+  return { series: data.series || [], today: data.today || null }
 }
 
 export async function getForecast(params = {}) {
   const { data } = await api.get('/dashboard/forecast', { params })
-  return data.forecast || []
+  return { forecast: data.forecast || [], today: data.today || null }
 }
 
 export async function getStations() {

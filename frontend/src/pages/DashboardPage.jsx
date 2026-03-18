@@ -43,8 +43,8 @@ export default function DashboardPage() {
           latestWqi: s.avgWqi ?? 0,
           recentAnomaliesCount: s.recentAnomaliesCount ?? 0,
         })
-        setTimeSeries(Array.isArray(series) ? series : [])
-        setForecast(Array.isArray(fc) ? fc : [])
+        setTimeSeries(Array.isArray(series?.series) ? series.series : (Array.isArray(series) ? series : []))
+        setForecast(Array.isArray(fc?.forecast) ? fc.forecast : (Array.isArray(fc) ? fc : []))
         setAlerts(Array.isArray(al) ? al : [])
       } catch (err) {
         if (!cancelled) {

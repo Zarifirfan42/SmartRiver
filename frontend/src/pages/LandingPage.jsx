@@ -182,7 +182,7 @@ export default function LandingPage() {
               SmartRiver
             </h1>
             <p className="mt-4 text-xl font-medium text-river-600 sm:text-2xl">
-              A Smart Water Quality Monitoring and Prediction System
+              Smart River Monitoring and Pollution Prediction System
             </p>
             <p className="mx-auto mt-6 max-w-2xl text-base text-surface-600 sm:text-lg leading-relaxed">
               Monitor river health, analyze Water Quality Index (WQI), and predict future pollution trends using intelligent data analysis.

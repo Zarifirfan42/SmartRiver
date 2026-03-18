@@ -10,7 +10,7 @@ from backend.auth.auth_service import (
     create_access_token,
 )
 from backend.auth.dependencies import get_current_user, require_user
-from backend.db.repository import get_user_by_email, create_user
+from backend.db.repository import get_user_by_email, create_user, update_user_password_by_email
 
 router = APIRouter()
 
@@ -24,6 +24,12 @@ class RegisterRequest(BaseModel):
     email: EmailStr
     password: str
     full_name: str | None = None
+
+
+class ResetPasswordRequest(BaseModel):
+    email: str
+    new_password: str
+    confirm_password: str
 
 
 class UserResponse(BaseModel):
@@ -108,3 +114,27 @@ def register(body: RegisterRequest):
 def get_me(user: dict = Depends(require_user)):
     """Return current user from JWT. 401 if not authenticated."""
     return user
+
+
+@router.post("/reset-password")
+def reset_password(body: ResetPasswordRequest):
+    """
+    Forgot password: set new password by email. No login required.
+    Checks email exists, validates new_password == confirm_password, hashes with bcrypt, updates in DB.
+    """
+    email = (body.email or "").strip().lower()
+    if not email:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Email required")
+    if not body.new_password or len(body.new_password) < 6:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="New password must be at least 6 characters")
+    if body.new_password != body.confirm_password:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Passwords do not match")
+
+    user = get_user_by_email(email)
+    if not user:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Email not found")
+
+    updated = update_user_password_by_email(email, hash_password(body.new_password))
+    if not updated:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Email not found")
+    return {"message": "Password reset successful. Please login."}

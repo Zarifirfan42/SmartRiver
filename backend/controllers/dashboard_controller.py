@@ -31,7 +31,8 @@ def dashboard_time_series(
     limit: int = Query(500, ge=1, le=2000),
 ):
     station = station_code or station_name
-    return {"series": get_time_series(station_code=station, station_name=station, year=year, limit=limit)}
+    from backend.db.repository import _today_str
+    return {"series": get_time_series(station_code=station, station_name=station, year=year, limit=limit), "today": _today_str()}
 
 
 @router.get("/forecast")
@@ -41,8 +42,9 @@ def dashboard_forecast(
     year_to: int = Query(None, description="Forecast year to (2025-2028)"),
     limit: int = Query(5000, ge=1, le=10000),
 ):
-    """Forecast predictions for 2025-2028 only. Historical data (2023-2024) comes from time-series endpoint."""
-    return {"forecast": get_latest_forecast(station_code=station_code, limit=limit, year_from=year_from, year_to=year_to)}
+    """Forecast predictions: only dates > today. Historical data comes from time-series endpoint."""
+    from backend.db.repository import _today_str
+    return {"forecast": get_latest_forecast(station_code=station_code, limit=limit, year_from=year_from, year_to=year_to), "today": _today_str()}
 
 
 @router.get("/stations")
@@ -81,8 +83,9 @@ def dashboard_readings_table(
     sort_order: str = Query("asc", description="'asc' or 'desc'"),
     limit: int = Query(50, ge=1, le=100000),
     offset: int = Query(0, ge=0),
+    data_type: str = Query(None, description="Filter by data_type: all, historical (date <= today), forecast (date > today)"),
 ):
-    """Dataset table: Station Name, Date, WQI, River Status. Pagination via limit/offset. All dataset records available."""
+    """Dataset table: Station Name, Date, WQI, River Status, data_type. data_type: all | historical | forecast."""
     return {
         "data": get_readings_table(
             station_name=station_name,
@@ -94,6 +97,7 @@ def dashboard_readings_table(
             sort_order=sort_order,
             limit=limit,
             offset=offset,
+            data_type=data_type,
         )
     }
 
@@ -105,9 +109,10 @@ def dashboard_readings_count(
     status: str = Query(None),
     date_from: str = Query(None),
     date_to: str = Query(None),
+    data_type: str = Query(None, description="all, historical, forecast"),
 ):
-    """Total count of readings matching filters (for pagination)."""
-    return {"total": get_readings_count(station_name=station_name, year=year, status=status, date_from=date_from, date_to=date_to)}
+    """Total count of readings/forecast matching filters (for pagination)."""
+    return {"total": get_readings_count(station_name=station_name, year=year, status=status, date_from=date_from, date_to=date_to, data_type=data_type)}
 
 
 @router.get("/years")

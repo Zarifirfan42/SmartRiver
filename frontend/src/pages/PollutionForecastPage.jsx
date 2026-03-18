@@ -8,12 +8,25 @@ import { useState, useEffect } from 'react'
 import ForecastChart from '../components/charts/ForecastChart'
 import * as dashboardApi from '../api/dashboard'
 
-const FORECAST_YEAR_OPTIONS = [
-  { value: 'all', label: 'All (2025-2028)', yearFrom: 2025, yearTo: 2028 },
-  { value: '2025', label: '2025', yearFrom: 2025, yearTo: 2025 },
-  { value: '2026', label: '2026', yearFrom: 2026, yearTo: 2026 },
-  { value: '2027', label: '2027', yearFrom: 2027, yearTo: 2027 },
-  { value: '2028', label: '2028', yearFrom: 2028, yearTo: 2028 },
+const MONTH_RANGE_OPTIONS = [
+  { value: 1, label: '1 month (Jan)' },
+  { value: 2, label: '2 months (Jan–Feb)' },
+  { value: 3, label: '3 months (Jan–Mar)' },
+  { value: 4, label: '4 months (Jan–Apr)' },
+  { value: 5, label: '5 months (Jan–May)' },
+  { value: 6, label: '6 months (Jan–Jun)' },
+  { value: 7, label: '7 months (Jan–Jul)' },
+  { value: 8, label: '8 months (Jan–Aug)' },
+  { value: 9, label: '9 months (Jan–Sep)' },
+  { value: 10, label: '10 months (Jan–Oct)' },
+  { value: 11, label: '11 months (Jan–Nov)' },
+  { value: 12, label: '12 months (Jan–Dec)' },
+]
+
+const YEAR_OPTIONS = [
+  { value: 2026, label: '2026' },
+  { value: 2027, label: '2027' },
+  { value: 2028, label: '2028' },
 ]
 
 function formatStatus(s) {
@@ -28,13 +41,14 @@ function formatStatus(s) {
 export default function PollutionForecastPage() {
   const [stations, setStations] = useState([])
   const [station, setStation] = useState('')
-  const [forecastRange, setForecastRange] = useState('all')
+  const [selectedMonthRange, setSelectedMonthRange] = useState(1)
+  const [selectedYear, setSelectedYear] = useState(2027)
   const [historical, setHistorical] = useState([])
   const [forecast, setForecast] = useState([])
+  const [today, setToday] = useState(null)
+  const [showHistorical, setShowHistorical] = useState(true)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
-
-  const rangeOption = FORECAST_YEAR_OPTIONS.find((o) => o.value === forecastRange) || FORECAST_YEAR_OPTIONS[0]
 
   useEffect(() => {
     let cancelled = false
@@ -64,15 +78,18 @@ export default function PollutionForecastPage() {
       dashboardApi.getTimeSeries({ station_name: station, limit: 2000 }),
       dashboardApi.getForecast({
         station_code: station,
-        year_from: rangeOption.yearFrom,
-        year_to: rangeOption.yearTo,
+        year_from: selectedYear,
+        year_to: selectedYear,
         limit: 5000,
       }),
     ])
-      .then(([series, fc]) => {
+      .then(([tsRes, fcRes]) => {
         if (cancelled) return
+        const series = tsRes?.series ?? (Array.isArray(tsRes) ? tsRes : [])
+        const fc = fcRes?.forecast ?? (Array.isArray(fcRes) ? fcRes : [])
         setHistorical(Array.isArray(series) ? series : [])
         setForecast(Array.isArray(fc) ? fc : [])
+        setToday(tsRes?.today ?? fcRes?.today ?? null)
       })
       .catch((e) => {
         if (!cancelled) {
@@ -83,7 +100,7 @@ export default function PollutionForecastPage() {
       })
       .finally(() => { if (!cancelled) setLoading(false) })
     return () => { cancelled = true }
-  }, [station, forecastRange, rangeOption.yearFrom, rangeOption.yearTo])
+  }, [station, selectedYear])
 
   const predictionTableRows = forecast.map((f) => ({
     date: f.date || '—',
@@ -97,7 +114,7 @@ export default function PollutionForecastPage() {
       <div>
         <h1 className="font-display text-2xl font-semibold text-surface-900">Pollution forecast</h1>
         <p className="text-surface-600 mt-0.5">
-          Historical data (2023-2024) and forecast predictions (2025-2028). Select station and forecast range. Chart: Historical (solid) vs Forecast (dashed).
+          Historical data (up to today) and forecast predictions (from tomorrow onwards). Select year and month range to view predictions; each forecast point uses its original forecast date.
         </p>
       </div>
 
@@ -125,32 +142,79 @@ export default function PollutionForecastPage() {
           </select>
         </div>
         <div>
-          <label className="label">Forecast range</label>
+          <label className="label">Select year</label>
           <select
-            value={forecastRange}
-            onChange={(e) => setForecastRange(e.target.value)}
-            className="input-field w-auto min-w-[160px]"
+            value={selectedYear}
+            onChange={(e) => setSelectedYear(Number(e.target.value))}
+            className="input-field w-auto min-w-[120px]"
           >
-            {FORECAST_YEAR_OPTIONS.map((opt) => (
+            {YEAR_OPTIONS.map((opt) => (
               <option key={opt.value} value={opt.value}>{opt.label}</option>
             ))}
           </select>
+        </div>
+        <div>
+          <label className="label">Select month range</label>
+          <select
+            value={selectedMonthRange}
+            onChange={(e) => setSelectedMonthRange(Number(e.target.value))}
+            className="input-field w-auto min-w-[180px]"
+          >
+            {MONTH_RANGE_OPTIONS.map((opt) => (
+              <option key={opt.value} value={opt.value}>{opt.label}</option>
+            ))}
+          </select>
+        </div>
+        <div className="flex items-end">
+          <label className="inline-flex items-center gap-2 text-sm text-surface-700 mb-1.5">
+            <input
+              type="checkbox"
+              className="rounded border-surface-300 text-cyan-600 focus:ring-cyan-500"
+              checked={showHistorical}
+              onChange={(e) => setShowHistorical(e.target.checked)}
+            />
+            <span>Show historical data</span>
+          </label>
         </div>
       </div>
 
       <div className="card">
         <h2 className="font-display font-semibold text-surface-800 mb-4">Forecast chart</h2>
         <p className="text-sm text-surface-500 mb-4">
-          X-axis: chronological date (2023 → 2028). <strong>Historical Data</strong> (solid line, 2023-2024). <strong>Forecast Prediction</strong> (dashed line, 2025-2028).
+          Daily predicted WQI for the selected year and month range (January up to the selected month). Historical data ends at today; forecast starts from tomorrow.
         </p>
         {loading ? (
           <p className="text-surface-500 py-8">Loading…</p>
         ) : (
-          <ForecastChart
-            historical={historical.map((d) => ({ date: d.date, wqi: d.wqi ?? d.value }))}
-            forecast={forecast.map((f) => ({ date: f.date, wqi: f.wqi ?? f.value }))}
-            height={360}
-          />
+          (() => {
+            // Filter historical and forecast by cumulative month range within the selected year
+            const maxMonth = selectedMonthRange
+            const yearStr = String(selectedYear)
+            const histFiltered = (showHistorical ? historical : []).filter((d) => {
+              const ds = (d.date || '').slice(0, 10)
+              if (!ds.startsWith(yearStr)) return false
+              const m = Number(ds.slice(5, 7))
+              return m >= 1 && m <= maxMonth
+            })
+            const fcFiltered = forecast.filter((f) => {
+              const ds = (f.date || '').slice(0, 10)
+              if (!ds.startsWith(yearStr)) return false
+              const m = Number(ds.slice(5, 7))
+              return m >= 1 && m <= maxMonth
+            })
+            if (fcFiltered.length === 0) {
+              return <p className="text-surface-500 py-8">No forecast data available for selected month range.</p>
+            }
+            return (
+              <ForecastChart
+                historical={histFiltered.map((d) => ({ date: d.date, wqi: d.wqi ?? d.value }))}
+                forecast={fcFiltered.map((f) => ({ date: f.date, wqi: f.wqi ?? f.value }))}
+                today={today}
+                viewMode="daily"
+                height={360}
+              />
+            )
+          })()
         )}
       </div>
 

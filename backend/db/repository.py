@@ -1,10 +1,19 @@
 """
 Database repository — Store and retrieve prediction results, alerts, readings, users.
 Uses in-memory store by default; can be extended to PostgreSQL via database/db_connection.
+Classification: record.date <= today → historical; record.date > today → forecast.
 """
 from datetime import datetime, date
 from typing import Any, Optional
 import json
+import os
+import sqlite3
+from pathlib import Path
+
+
+def _today_str() -> str:
+    """Current system date (YYYY-MM-DD) for classifying historical vs forecast."""
+    return date.today().isoformat()
 
 # In-memory store (mirrors DB tables). Replace with SQL when DATABASE_URL is set.
 _store = {
@@ -16,6 +25,40 @@ _store = {
     "stations": [],       # river_stations (admin-managed)
     "_id": {"users": 1, "datasets": 1, "readings": 1, "prediction_logs": 1, "alerts": 1, "stations": 1},
 }
+
+_SQLITE_PATH = os.environ.get("SMARTRIVER_SQLITE_PATH") or str(
+    Path(__file__).resolve().parent / "smartriver.sqlite3"
+)
+
+
+def _sqlite_conn() -> sqlite3.Connection:
+    """
+    SQLite connection for persistent auth/user data.
+    We keep analytics/readings in-memory for now, but users must persist across restarts.
+    """
+    conn = sqlite3.connect(_SQLITE_PATH)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+def _ensure_sqlite_schema() -> None:
+    with _sqlite_conn() as conn:
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS users (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              email TEXT NOT NULL UNIQUE,
+              password_hash TEXT NOT NULL,
+              full_name TEXT NULL,
+              role TEXT NOT NULL DEFAULT 'public',
+              is_active INTEGER NOT NULL DEFAULT 1,
+              created_at TEXT NOT NULL
+            )
+            """
+        )
+
+
+_ensure_sqlite_schema()
 
 
 def _next_id(table: str) -> int:
@@ -41,19 +84,33 @@ def save_dataset(name: str, file_path: str, file_size: int, row_count: int, uplo
 # ---------- Users (for auth) ----------
 def get_user_by_id(user_id: int) -> Optional[dict]:
     """Get user by primary key."""
-    for u in _store["users"]:
-        if u["id"] == user_id:
-            return dict(u)
-    return None
+    try:
+        uid = int(user_id)
+    except (TypeError, ValueError):
+        return None
+    with _sqlite_conn() as conn:
+        row = conn.execute(
+            "SELECT id, email, password_hash, full_name, role, is_active, created_at FROM users WHERE id = ?",
+            (uid,),
+        ).fetchone()
+        if not row:
+            return None
+        return dict(row)
 
 
 def get_user_by_email(email: str) -> Optional[dict]:
     """Get user by email (case-insensitive)."""
     email_lower = (email or "").strip().lower()
-    for u in _store["users"]:
-        if (u.get("email") or "").strip().lower() == email_lower:
-            return dict(u)
-    return None
+    if not email_lower:
+        return None
+    with _sqlite_conn() as conn:
+        row = conn.execute(
+            "SELECT id, email, password_hash, full_name, role, is_active, created_at FROM users WHERE lower(email) = ?",
+            (email_lower,),
+        ).fetchone()
+        if not row:
+            return None
+        return dict(row)
 
 
 def create_user(
@@ -65,18 +122,45 @@ def create_user(
     """Create a new user. Returns the created user dict."""
     if get_user_by_email(email):
         raise ValueError("Email already registered")
-    user_id = _next_id("users")
-    row = {
+    email_norm = (email or "").strip().lower()
+    if not email_norm:
+        raise ValueError("Email required")
+    role_norm = role if role in ("admin", "public") else "public"
+    created_at = datetime.utcnow().isoformat()
+    with _sqlite_conn() as conn:
+        try:
+            cur = conn.execute(
+                """
+                INSERT INTO users (email, password_hash, full_name, role, is_active, created_at)
+                VALUES (?, ?, ?, ?, 1, ?)
+                """,
+                (email_norm, password_hash, (full_name or "").strip() or None, role_norm, created_at),
+            )
+        except sqlite3.IntegrityError:
+            raise ValueError("Email already registered")
+        user_id = int(cur.lastrowid)
+    return {
         "id": user_id,
-        "email": email.strip().lower(),
+        "email": email_norm,
         "password_hash": password_hash,
         "full_name": (full_name or "").strip() or None,
-        "role": role if role in ("admin", "public") else "public",
-        "is_active": True,
-        "created_at": datetime.utcnow().isoformat(),
+        "role": role_norm,
+        "is_active": 1,
+        "created_at": created_at,
     }
-    _store["users"].append(row)
-    return dict(row)
+
+
+def update_user_password_by_email(email: str, new_password_hash: str) -> bool:
+    """Update password for user with given email. Returns True if updated, False if email not found."""
+    email_lower = (email or "").strip().lower()
+    if not email_lower:
+        return False
+    with _sqlite_conn() as conn:
+        cur = conn.execute(
+            "UPDATE users SET password_hash = ? WHERE lower(email) = ?",
+            (new_password_hash, email_lower),
+        )
+        return cur.rowcount > 0
 
 
 def save_readings(dataset_id: int, readings: list[dict]) -> None:
@@ -98,7 +182,60 @@ def save_readings(dataset_id: int, readings: list[dict]) -> None:
         }
         if r.get("river_status") is not None:
             rec["river_status"] = str(r.get("river_status")).strip() or None
+        if r.get("source") is not None:
+            rec["source"] = str(r.get("source")).strip()
+        rec["data_type"] = str(r.get("data_type") or "historical").strip()
         _store["readings"].append(rec)
+
+
+def append_reading(
+    dataset_id: int,
+    station_code: str,
+    station_name: Optional[str],
+    reading_date: str,
+    wqi: float,
+    river_status: str,
+    source: Optional[str] = None,
+    data_type: Optional[str] = None,
+) -> dict:
+    """
+    Append a single reading without clearing existing data (e.g. simulated live data).
+    Returns the created record. Use source='simulated_live', data_type='simulated_live' for auto-generated daily data.
+    """
+    rec = {
+        "id": _next_id("readings"),
+        "dataset_id": dataset_id,
+        "station_code": str(station_code).strip(),
+        "station_name": (station_name or station_code).strip() or None,
+        "reading_date": str(reading_date)[:10],
+        "wqi": float(wqi),
+        "river_status": str(river_status).strip() if river_status else None,
+        "created_at": datetime.utcnow().isoformat(),
+    }
+    if source:
+        rec["source"] = str(source).strip()
+    rec["data_type"] = (data_type or ("simulated_live" if source == "simulated_live" else "historical")).strip()
+    _store["readings"].append(rec)
+    return rec
+
+
+def get_latest_reading_for_station(station_name_or_code: str) -> Optional[dict]:
+    """
+    Get the latest reading (by date) for a station with reading_date <= today.
+    Used to continue simulated live from last value; never use future dates.
+    """
+    key = (station_name_or_code or "").strip()
+    today = _today_str()
+    if not key:
+        return None
+    candidates = [
+        r for r in _store["readings"]
+        if (r.get("station_name") or r.get("station_code") or "").strip() == key
+        and (r.get("reading_date") or "") <= today
+    ]
+    if not candidates:
+        return None
+    return max(candidates, key=lambda x: x.get("reading_date") or "")
 
 
 def save_prediction_log(
@@ -164,12 +301,12 @@ def save_alert(
 
 def get_summary() -> dict:
     """
-    Dashboard summary using LATEST record per station only (not entire dataset).
-    For each station: find latest date, use that row as current monitoring record.
-    Then compute: total stations, average WQI (latest), status distribution (Clean / Slightly Polluted / Polluted).
+    Dashboard summary using LATEST record per station only (reading_date <= today).
+    For each station: find latest date <= today, use that row as current monitoring record.
     """
     from collections import defaultdict
-    readings = _store["readings"]
+    today = _today_str()
+    readings = [r for r in _store["readings"] if (r.get("reading_date") or "") <= today]
     if not readings:
         return {
             "totalStations": 0,
@@ -179,6 +316,7 @@ def get_summary() -> dict:
             "pollutedCount": 0,
             "recentAnomaliesCount": len([a for a in _store["alerts"] if not a.get("is_read")]),
             "predictedAvgWqi2025_2028": get_predicted_avg_wqi_2025_2028(),
+            "today": today,
         }
     by_station = defaultdict(list)
     for r in readings:
@@ -199,6 +337,7 @@ def get_summary() -> dict:
             "pollutedCount": 0,
             "recentAnomaliesCount": len([a for a in _store["alerts"] if not a.get("is_read")]),
             "predictedAvgWqi2025_2028": get_predicted_avg_wqi_2025_2028(),
+            "today": today,
         }
     wqis = [r["wqi"] for r in latest_records]
     clean = sum(1 for r in latest_records if _status_from_reading(r) == "clean")
@@ -212,6 +351,7 @@ def get_summary() -> dict:
         "pollutedCount": polluted,
         "recentAnomaliesCount": len([a for a in _store["alerts"] if not a.get("is_read")]),
         "predictedAvgWqi2025_2028": get_predicted_avg_wqi_2025_2028(),
+        "today": today,
     }
 
 
@@ -236,8 +376,9 @@ def get_predicted_avg_wqi_2025_2028() -> float:
 
 
 def get_time_series(station_code: Optional[str] = None, station_name: Optional[str] = None, year: Optional[int] = None, limit: int = 100) -> list[dict]:
-    """WQI time series for charts. Filter by station (code or name) and/or year. Chronological, no duplicate dates per station."""
-    readings = _store["readings"]
+    """WQI time series for charts: only readings with reading_date <= today (historical + simulated_live)."""
+    today = _today_str()
+    readings = [r for r in _store["readings"] if (r.get("reading_date") or "") <= today]
     if station_code or station_name:
         readings = [
             r for r in readings
@@ -278,8 +419,9 @@ def get_wqi_data(
     year: Optional[int] = None,
     limit: int = 500,
 ) -> list[dict]:
-    """WQI records: Date, Station Name, WQI, River Status. Filter by station and/or year."""
-    readings = _store["readings"]
+    """WQI records (reading_date <= today): Date, Station Name, WQI, River Status. Filter by station and/or year."""
+    today = _today_str()
+    readings = [r for r in _store["readings"] if (r.get("reading_date") or "") <= today]
     if station_code or station_name:
         readings = [
             r for r in readings
@@ -341,9 +483,22 @@ def get_readings_count(
     status: Optional[str] = None,
     date_from: Optional[str] = None,
     date_to: Optional[str] = None,
+    data_type: Optional[str] = None,
 ) -> int:
-    """Total number of readings matching filters (for pagination)."""
+    """Total count matching filters. data_type: 'all' | 'historical' | 'forecast'. historical = date <= today, forecast = from prediction_logs date > today."""
+    today = _today_str()
+    if (data_type or "").strip().lower() == "forecast":
+        forecast = get_latest_forecast(station_code=station_name, limit=100000)
+        if year is not None:
+            forecast = [f for f in forecast if (f.get("date") or "")[:4] == str(year)]
+        if date_from:
+            forecast = [f for f in forecast if (f.get("date") or "") >= date_from[:10]]
+        if date_to:
+            forecast = [f for f in forecast if (f.get("date") or "") <= date_to[:10]]
+        return len(forecast)
     readings = list(_store["readings"])
+    if (data_type or "").strip().lower() == "historical":
+        readings = [r for r in readings if (r.get("reading_date") or "") <= today]
     readings = _apply_readings_filters(readings, station_name=station_name, year=year, status=status, date_from=date_from, date_to=date_to)
     return len(readings)
 
@@ -358,9 +513,37 @@ def get_readings_table(
     sort_order: str = "asc",
     limit: int = 100000,
     offset: int = 0,
+    data_type: Optional[str] = None,
 ) -> list[dict]:
-    """Dataset table: Station Name, Date, WQI, River Status. Filter, sort, paginate. Returns ALL matching rows when limit is high; use offset for pagination."""
+    """Dataset table: Station Name, Date, WQI, River Status, data_type. data_type: 'all' | 'historical' (date <= today) | 'forecast' (date > today from prediction_logs)."""
+    today = _today_str()
+    if (data_type or "").strip().lower() == "forecast":
+        forecast = get_latest_forecast(station_code=station_name, limit=limit + offset, year_from=int(year) if year is not None else None, year_to=int(year) if year is not None else None)
+        if date_from:
+            forecast = [f for f in forecast if (f.get("date") or "") >= date_from[:10]]
+        if date_to:
+            forecast = [f for f in forecast if (f.get("date") or "") <= date_to[:10]]
+        key = "wqi" if sort_by == "wqi" else "date"
+        reverse = sort_order.lower() == "desc"
+        forecast = sorted(forecast, key=lambda x: (x.get(key) if key == "wqi" else x.get(key) or ""), reverse=reverse)
+        forecast = forecast[offset : offset + limit]
+        out = []
+        for r in forecast:
+            st = r.get("river_status")
+            if st is None:
+                w = r.get("wqi", 0)
+                st = "clean" if w >= 81 else ("slightly_polluted" if w >= 60 else "polluted")
+            out.append({
+                "station_name": r.get("station_name") or r.get("station_code"),
+                "date": r.get("date"),
+                "wqi": r.get("wqi"),
+                "river_status": st,
+                "data_type": "forecast",
+            })
+        return out
     readings = list(_store["readings"])
+    if (data_type or "").strip().lower() == "historical":
+        readings = [r for r in readings if (r.get("reading_date") or "") <= today]
     readings = _apply_readings_filters(readings, station_name=station_name, year=year, status=status, date_from=date_from, date_to=date_to)
     key = "wqi" if sort_by == "wqi" else "reading_date"
     reverse = sort_order.lower() == "desc"
@@ -377,6 +560,7 @@ def get_readings_table(
             "date": r["reading_date"],
             "wqi": r["wqi"],
             "river_status": st,
+            "data_type": r.get("data_type") or "historical",
         })
     return out
 
@@ -395,12 +579,14 @@ def get_available_years() -> list[int]:
 
 
 def get_latest_forecast(station_code: Optional[str] = None, limit: int = 10000, year_from: Optional[int] = None, year_to: Optional[int] = None) -> list[dict]:
-    """Latest forecast from prediction_logs (type=forecast). Optional filter by station and year range (2025-2028)."""
+    """Forecast from prediction_logs: only dates > today (starts from tomorrow). Optional filter by station and year range."""
+    today = _today_str()
     logs = [l for l in _store["prediction_logs"] if l["prediction_type"] == "forecast"]
     if not logs:
         return []
     latest = sorted(logs, key=lambda x: x["created_at"])[-1]
     forecast = latest.get("result_json", {}).get("forecast", [])
+    forecast = [f for f in forecast if (f.get("date") or "") > today]
     if station_code:
         forecast = [f for f in forecast if f.get("station_code") == station_code or f.get("station_name") == station_code]
     if year_from is not None:
@@ -429,10 +615,12 @@ def get_alerts(unread_only: bool = False, limit: int = 50) -> list[dict]:
 
 
 def get_historical_alerts(limit: int = 100) -> list[dict]:
-    """Historical alerts (from latest monitoring data). Sorted by date: latest first."""
+    """Historical alerts: alert_type historical (or None) and date <= today. Sorted by date: latest first."""
+    today = _today_str()
     alerts = [
         a for a in _store["alerts"]
-        if (a.get("alert_type") or "").lower() == "historical" or a.get("alert_type") is None
+        if ((a.get("alert_type") or "").lower() == "historical" or a.get("alert_type") is None)
+        and ((a.get("date") or "") <= today or not a.get("date"))
     ]
     def _key(a: dict) -> str:
         return (a.get("date") or a.get("created_at") or "")
@@ -440,8 +628,13 @@ def get_historical_alerts(limit: int = 100) -> list[dict]:
 
 
 def get_forecast_alerts(limit: int = 100) -> list[dict]:
-    """Forecast alerts (from prediction results). Sorted by forecast date: earliest first."""
-    alerts = [a for a in _store["alerts"] if (a.get("alert_type") or "").lower() == "forecast"]
+    """Forecast alerts: alert_type forecast and date > today. Sorted by forecast date: earliest first."""
+    today = _today_str()
+    alerts = [
+        a for a in _store["alerts"]
+        if (a.get("alert_type") or "").lower() == "forecast"
+        and (a.get("date") or "") > today
+    ]
     def _key(a: dict) -> str:
         return (a.get("date") or a.get("created_at") or "")
     return sorted(alerts, key=_key, reverse=False)[:limit]
@@ -479,10 +672,13 @@ def get_latest_anomalies(station_code: Optional[str] = None, limit: int = 500) -
 
 
 def get_stations() -> list[dict]:
-    """Stations from dataset only: full station names, latest WQI, river status."""
+    """Stations: latest WQI per station using only readings with reading_date <= today."""
     from collections import defaultdict
+    today = _today_str()
     by_station = defaultdict(list)
     for r in _store["readings"]:
+        if (r.get("reading_date") or "") > today:
+            continue
         key = r.get("station_name") or r.get("station_code", "")
         if key:
             by_station[key].append(r)

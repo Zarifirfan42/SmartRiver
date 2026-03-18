@@ -29,6 +29,7 @@ api.interceptors.response.use(
     if (err.response?.status === 401) {
       localStorage.removeItem('smartriver_token')
       localStorage.removeItem('smartriver_user')
+      window.dispatchEvent(new CustomEvent('smartriver:auth-logout'))
     }
     return Promise.reject(err)
   }

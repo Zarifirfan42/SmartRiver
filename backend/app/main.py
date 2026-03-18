@@ -30,6 +30,11 @@ async def lifespan(app: FastAPI):
         print("Default dataset loaded; stations and WQI data ready.")
     except Exception as e:
         print("Dataset load skipped:", e)
+    try:
+        from backend.services.live_simulation import start_daily_scheduler
+        start_daily_scheduler()
+    except Exception as e:
+        print("Live simulation scheduler skipped:", e)
     yield
 
 

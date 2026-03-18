@@ -25,7 +25,7 @@ export default function AnomalyDetectionPage() {
         dashboardApi.getTimeSeries({ station_name: s, limit: 500 }),
         dashboardApi.getAnomalies({ station_code: s, limit: 500 }),
       ])
-      setTimeSeries(Array.isArray(series) ? series : [])
+      setTimeSeries(Array.isArray(series?.series) ? series.series : (Array.isArray(series) ? series : []))
       setAnomalies(Array.isArray(list) ? list : [])
     } catch (e) {
       setError(e.message || 'Failed to load data')

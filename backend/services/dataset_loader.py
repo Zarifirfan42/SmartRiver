@@ -349,3 +349,19 @@ def run_startup_data_load():
         run_forecast()
     except Exception:
         pass
+
+    # Backfill missing daily readings per station up to today (simulated_backfill).
+    try:
+        from backend.services.backfill_service import run_backfill
+        run_backfill()
+    except Exception as e:
+        print("Backfill skipped:", e)
+
+    # Simulated live data: generate today's WQI per station (continues from latest historical/forecast).
+    try:
+        from backend.services.live_simulation import run_simulated_live_data
+        n = run_simulated_live_data()
+        if n > 0:
+            print(f"Simulated live data: generated {n} readings for today.")
+    except Exception as e:
+        print("Live simulation skipped:", e)

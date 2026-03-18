@@ -1,4 +1,5 @@
 import { useState, useEffect, useMemo } from 'react'
+import { Link } from 'react-router-dom'
 import AlertsBySeverityChart from '../components/charts/AlertsBySeverityChart'
 import * as dashboardApi from '../api/dashboard'
 
@@ -7,6 +8,12 @@ const CATEGORY_OPTIONS = [
   { value: 'clean', label: 'Clean' },
   { value: 'slightly_polluted', label: 'Slightly Polluted' },
   { value: 'polluted', label: 'Polluted' },
+]
+
+const ALERT_LEVEL_OPTIONS = [
+  { value: '', label: 'All levels' },
+  { value: 'warning', label: 'Warning' },
+  { value: 'critical', label: 'Critical' },
 ]
 
 function formatStatus(s) {
@@ -34,6 +41,35 @@ function alertLevel(severity) {
   return severity || '—'
 }
 
+/** Human-readable alert message. Uses backend message or builds from fields. */
+function alertMessage(alert, isForecast) {
+  if (alert.message && String(alert.message).trim()) return alert.message.trim()
+  const name = alert.station_name || alert.station_code || 'Unknown'
+  const status = formatStatus(alert.river_status)
+  const wqi = alert.wqi != null ? Number(alert.wqi).toFixed(1) : '—'
+  const dateStr = alert.date || ''
+  let when = dateStr
+  if (dateStr && dateStr.length >= 7) {
+    try {
+      const [y, m] = dateStr.split('-')
+      const months = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December']
+      when = `${months[parseInt(m, 10) - 1] || m} ${y}`
+    } catch (_) {}
+  }
+  if (isForecast) {
+    return `${name} is predicted to become ${status.toLowerCase()} in ${when || 'future'}.`
+  }
+  return `${name} is ${status.toLowerCase()} (WQI: ${wqi}) on ${when || dateStr || '—'}.`
+}
+
+/** Row background by alert level: Warning = orange, Critical = red */
+function rowClassByLevel(severity) {
+  const s = (severity || '').toLowerCase()
+  if (s === 'critical') return 'bg-red-50 hover:bg-red-100/80 border-l-4 border-red-400'
+  if (s === 'warning') return 'bg-amber-50 hover:bg-amber-100/80 border-l-4 border-amber-400'
+  return 'hover:bg-surface-50 border-l-4 border-transparent'
+}
+
 export default function AlertMonitoringPage() {
   const [stations, setStations] = useState([])
   const [historicalAlerts, setHistoricalAlerts] = useState([])
@@ -43,8 +79,10 @@ export default function AlertMonitoringPage() {
 
   const [histStation, setHistStation] = useState('')
   const [histCategory, setHistCategory] = useState('')
+  const [histAlertLevel, setHistAlertLevel] = useState('')
   const [fcStation, setFcStation] = useState('')
   const [fcCategory, setFcCategory] = useState('')
+  const [fcAlertLevel, setFcAlertLevel] = useState('')
 
   useEffect(() => {
     let cancelled = false
@@ -91,9 +129,11 @@ export default function AlertMonitoringPage() {
       if (histStation && name !== histStation) return false
       const status = normalizeStatusForFilter(a.river_status)
       if (histCategory && status !== histCategory) return false
+      const sev = (a.severity || '').toLowerCase()
+      if (histAlertLevel && sev !== histAlertLevel) return false
       return true
     })
-  }, [historicalAlerts, histStation, histCategory])
+  }, [historicalAlerts, histStation, histCategory, histAlertLevel])
 
   const filteredForecast = useMemo(() => {
     return forecastAlerts.filter((a) => {
@@ -101,17 +141,29 @@ export default function AlertMonitoringPage() {
       if (fcStation && name !== fcStation) return false
       const status = normalizeStatusForFilter(a.river_status)
       if (fcCategory && status !== fcCategory) return false
+      const sev = (a.severity || '').toLowerCase()
+      if (fcAlertLevel && sev !== fcAlertLevel) return false
       return true
     })
-  }, [forecastAlerts, fcStation, fcCategory])
+  }, [forecastAlerts, fcStation, fcCategory, fcAlertLevel])
 
   const allAlerts = [...filteredHistorical, ...filteredForecast]
+  const warningCount = allAlerts.filter((a) => (a.severity || '').toLowerCase() === 'warning').length
+  const criticalCount = allAlerts.filter((a) => (a.severity || '').toLowerCase() === 'critical').length
+  const hasNoAlerts = !loading && filteredHistorical.length === 0 && filteredForecast.length === 0
 
   return (
     <div className="space-y-6 animate-fade-in">
       <div>
         <h1 className="font-display text-2xl font-semibold text-surface-900">Alert monitoring</h1>
-        <p className="text-surface-600 mt-0.5">Historical alerts (latest monitoring) and forecast alerts (predictions)</p>
+        <p className="text-surface-600 mt-0.5">Historical alerts (latest monitoring) and forecast alerts (predictions). Slightly Polluted → Warning; Polluted → Critical.</p>
+      </div>
+
+      <div className="rounded-lg border border-dashed border-surface-200 bg-surface-50 px-4 py-3">
+        <p className="text-sm text-surface-600">
+          Alerts are automatically generated when river conditions are slightly polluted or polluted based on the latest
+          monitoring data and forecast predictions.
+        </p>
       </div>
 
       {error && (
@@ -121,15 +173,46 @@ export default function AlertMonitoringPage() {
       )}
       {loading && <p className="text-surface-500">Loading alerts…</p>}
 
-      <div className="card">
-        <h2 className="font-display font-semibold text-surface-800 mb-4">Alerts by severity</h2>
-        <AlertsBySeverityChart alerts={allAlerts} height={220} />
+      {/* Alert summary cards */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+        <div className="rounded-xl border border-amber-200 bg-amber-50/80 p-4 shadow-sm">
+          <p className="text-sm font-medium text-amber-800">Warning</p>
+          <p className="text-2xl font-bold text-amber-700 mt-1">
+            <span className="mr-2" aria-hidden>⚠️</span>
+            {warningCount}
+          </p>
+          <p className="text-xs text-amber-700/80 mt-1">Slightly Polluted</p>
+        </div>
+        <div className="rounded-xl border border-red-200 bg-red-50/80 p-4 shadow-sm">
+          <p className="text-sm font-medium text-red-800">Critical</p>
+          <p className="text-2xl font-bold text-red-700 mt-1">
+            <span className="mr-2" aria-hidden>🚨</span>
+            {criticalCount}
+          </p>
+          <p className="text-xs text-red-700/80 mt-1">Polluted</p>
+        </div>
       </div>
 
-      {/* Historical Alerts — latest monitoring; filters + table */}
-      <div className="card">
-        <h2 className="font-display font-semibold text-surface-800 mb-4">Historical alerts</h2>
-        <p className="text-sm text-surface-500 mb-4">From latest monitoring data per station. Triggered when status is Slightly Polluted or Polluted. Sorted by date (newest first).</p>
+      {hasNoAlerts && (
+        <div className="rounded-xl border border-surface-200 bg-white p-8 text-center">
+          <p className="text-surface-600 font-medium">No alerts detected. All rivers are in good condition.</p>
+          <p className="text-sm text-surface-500 mt-2">Alerts will appear here when monitoring or forecast data indicates Slightly Polluted or Polluted status.</p>
+        </div>
+      )}
+
+      <div className="rounded-xl border border-surface-200 bg-white p-4 shadow-sm">
+        <h2 className="font-display font-semibold text-surface-800 mb-4">Alerts by severity</h2>
+        {allAlerts.length > 0 ? (
+          <AlertsBySeverityChart alerts={allAlerts} height={220} />
+        ) : (
+          <div className="h-[220px] flex items-center justify-center text-surface-500 text-sm">No alerts to display.</div>
+        )}
+      </div>
+
+      {/* Historical Alerts — sorted latest first */}
+      <div className="rounded-xl border border-surface-200 bg-white p-4 shadow-sm">
+        <h2 className="font-display font-semibold text-surface-800 mb-2">Historical alerts</h2>
+        <p className="text-sm text-surface-500 mb-4">From latest monitoring data per station. Sorted by date (newest first).</p>
         <div className="flex flex-wrap gap-4 mb-4">
           <div>
             <label className="label">Station name</label>
@@ -151,9 +234,21 @@ export default function AlertMonitoringPage() {
             <select
               value={histCategory}
               onChange={(e) => setHistCategory(e.target.value)}
-              className="input-field w-auto min-w-[180px]"
+              className="input-field w-auto min-w-[160px]"
             >
               {CATEGORY_OPTIONS.map((opt) => (
+                <option key={opt.value || 'all'} value={opt.value}>{opt.label}</option>
+              ))}
+            </select>
+          </div>
+          <div>
+            <label className="label">Alert level</label>
+            <select
+              value={histAlertLevel}
+              onChange={(e) => setHistAlertLevel(e.target.value)}
+              className="input-field w-auto min-w-[140px]"
+            >
+              {ALERT_LEVEL_OPTIONS.map((opt) => (
                 <option key={opt.value || 'all'} value={opt.value}>{opt.label}</option>
               ))}
             </select>
@@ -168,19 +263,21 @@ export default function AlertMonitoringPage() {
                 <th className="px-4 py-2 font-medium text-surface-700">WQI</th>
                 <th className="px-4 py-2 font-medium text-surface-700">River status</th>
                 <th className="px-4 py-2 font-medium text-surface-700">Alert level</th>
+                <th className="px-4 py-2 font-medium text-surface-700">Alert message</th>
               </tr>
             </thead>
             <tbody>
               {!loading && filteredHistorical.length === 0 ? (
-                <tr><td colSpan={5} className="px-4 py-8 text-center text-surface-500">No historical alerts</td></tr>
+                <tr><td colSpan={6} className="px-4 py-8 text-center text-surface-500">No historical alerts</td></tr>
               ) : (
                 filteredHistorical.map((a) => (
-                  <tr key={`hist-${a.id}`} className="border-t border-surface-100">
+                  <tr key={`hist-${a.id}`} className={`border-t border-surface-100 transition-colors ${rowClassByLevel(a.severity)}`}>
                     <td className="px-4 py-2 font-medium text-surface-800">{a.station_name || a.station_code || '—'}</td>
                     <td className="px-4 py-2 text-surface-800">{a.date || '—'}</td>
                     <td className="px-4 py-2">{a.wqi != null ? Number(a.wqi).toFixed(1) : '—'}</td>
                     <td className="px-4 py-2">{formatStatus(a.river_status)}</td>
-                    <td className="px-4 py-2">{alertLevel(a.severity)}</td>
+                    <td className="px-4 py-2 font-medium">{alertLevel(a.severity)}</td>
+                    <td className="px-4 py-2 text-surface-700 max-w-xs">{alertMessage(a, false)}</td>
                   </tr>
                 ))
               )}
@@ -189,10 +286,10 @@ export default function AlertMonitoringPage() {
         </div>
       </div>
 
-      {/* Forecast Alerts — filters + table */}
-      <div className="card">
-        <h2 className="font-display font-semibold text-surface-800 mb-4">Forecast alerts</h2>
-        <p className="text-sm text-surface-500 mb-4">From forecast predictions. Triggered when predicted status is Slightly Polluted or Polluted. Sorted by forecast date (earliest first).</p>
+      {/* Forecast Alerts — sorted earliest first */}
+      <div className="rounded-xl border border-surface-200 bg-white p-4 shadow-sm">
+        <h2 className="font-display font-semibold text-surface-800 mb-2">Forecast alerts</h2>
+        <p className="text-sm text-surface-500 mb-4">From forecast predictions. Sorted by forecast date (earliest first).</p>
         <div className="flex flex-wrap gap-4 mb-4">
           <div>
             <label className="label">Station name</label>
@@ -214,9 +311,21 @@ export default function AlertMonitoringPage() {
             <select
               value={fcCategory}
               onChange={(e) => setFcCategory(e.target.value)}
-              className="input-field w-auto min-w-[180px]"
+              className="input-field w-auto min-w-[160px]"
             >
               {CATEGORY_OPTIONS.map((opt) => (
+                <option key={opt.value || 'all'} value={opt.value}>{opt.label}</option>
+              ))}
+            </select>
+          </div>
+          <div>
+            <label className="label">Alert level</label>
+            <select
+              value={fcAlertLevel}
+              onChange={(e) => setFcAlertLevel(e.target.value)}
+              className="input-field w-auto min-w-[140px]"
+            >
+              {ALERT_LEVEL_OPTIONS.map((opt) => (
                 <option key={opt.value || 'all'} value={opt.value}>{opt.label}</option>
               ))}
             </select>
@@ -231,19 +340,21 @@ export default function AlertMonitoringPage() {
                 <th className="px-4 py-2 font-medium text-surface-700">Predicted WQI</th>
                 <th className="px-4 py-2 font-medium text-surface-700">Predicted status</th>
                 <th className="px-4 py-2 font-medium text-surface-700">Alert level</th>
+                <th className="px-4 py-2 font-medium text-surface-700">Alert message</th>
               </tr>
             </thead>
             <tbody>
               {!loading && filteredForecast.length === 0 ? (
-                <tr><td colSpan={5} className="px-4 py-8 text-center text-surface-500">No forecast alerts</td></tr>
+                <tr><td colSpan={6} className="px-4 py-8 text-center text-surface-500">No forecast alerts</td></tr>
               ) : (
                 filteredForecast.map((a) => (
-                  <tr key={`fc-${a.id}`} className="border-t border-surface-100">
+                  <tr key={`fc-${a.id}`} className={`border-t border-surface-100 transition-colors ${rowClassByLevel(a.severity)}`}>
                     <td className="px-4 py-2 font-medium text-surface-800">{a.station_name || a.station_code || '—'}</td>
                     <td className="px-4 py-2 text-surface-800">{a.date || '—'}</td>
                     <td className="px-4 py-2">{a.wqi != null ? Number(a.wqi).toFixed(1) : '—'}</td>
                     <td className="px-4 py-2">{formatStatus(a.river_status)}</td>
-                    <td className="px-4 py-2">{alertLevel(a.severity)}</td>
+                    <td className="px-4 py-2 font-medium">{alertLevel(a.severity)}</td>
+                    <td className="px-4 py-2 text-surface-700 max-w-xs">{alertMessage(a, true)}</td>
                   </tr>
                 ))
               )}

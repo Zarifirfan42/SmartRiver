@@ -15,6 +15,12 @@ const SORT_OPTIONS = [
   { value: 'date_desc', sort_by: 'date', sort_order: 'desc', label: 'Date (latest first)' },
 ]
 
+const DATA_TYPE_OPTIONS = [
+  { value: '', label: 'All data' },
+  { value: 'historical', label: 'Historical (up to today)' },
+  { value: 'forecast', label: 'Forecast (after today)' },
+]
+
 export default function DatasetTable({ title = 'Dataset table', description = 'Station Name, Date, WQI, River Status. Filter and sort from dataset.', onDataChange }) {
   const [stations, setStations] = useState([])
   const [data, setData] = useState([])
@@ -26,6 +32,7 @@ export default function DatasetTable({ title = 'Dataset table', description = 'S
   const [dateFrom, setDateFrom] = useState('')
   const [dateTo, setDateTo] = useState('')
   const [status, setStatus] = useState('')
+  const [dataType, setDataType] = useState('')
   const [sortValue, setSortValue] = useState('date_asc')
   const [pageSize, setPageSize] = useState(10)
   const [page, setPage] = useState(1)
@@ -49,6 +56,7 @@ export default function DatasetTable({ title = 'Dataset table', description = 'S
       date_from: dateFrom || undefined,
       date_to: dateTo || undefined,
       status: status || undefined,
+      data_type: dataType || undefined,
       sort_by: sortOption.sort_by,
       sort_order: sortOption.sort_order,
       limit: pageSize,
@@ -61,6 +69,7 @@ export default function DatasetTable({ title = 'Dataset table', description = 'S
         date_from: params.date_from,
         date_to: params.date_to,
         status: params.status,
+        data_type: params.data_type,
       }),
     ])
       .then(([rows, count]) => {
@@ -86,16 +95,59 @@ export default function DatasetTable({ title = 'Dataset table', description = 'S
       })
       .finally(() => { if (!cancelled) setLoading(false) })
     return () => { cancelled = true }
-  }, [stationName, dateFrom, dateTo, status, sortValue, pageSize, page])
+  }, [stationName, dateFrom, dateTo, status, dataType, sortValue, pageSize, page])
 
   const totalPages = Math.max(1, Math.ceil(total / pageSize))
   const startRow = total === 0 ? 0 : (page - 1) * pageSize + 1
   const endRow = Math.min(page * pageSize, total)
 
+  const totalRecords = total
+  const totalStationsCurrentPage = new Set((data || []).map((r) => r.station_name || r.station || '')).size
+  const avgWqiCurrentPage =
+    data && data.length > 0
+      ? data.reduce((sum, r) => sum + (r.wqi != null ? Number(r.wqi) : 0), 0) / data.length
+      : 0
+  const latestDateCurrentPage =
+    data && data.length > 0
+      ? data
+          .map((r) => r.date || '')
+          .filter(Boolean)
+          .sort()
+          .slice(-1)[0]
+      : null
+
+  const rowStatusClass = (riverStatus) => {
+    const s = (riverStatus || '').toString().toLowerCase().replace(/\s+/g, '_')
+    if (s === 'clean') return 'bg-emerald-50 hover:bg-emerald-100/70'
+    if (s === 'slightly_polluted') return 'bg-amber-50 hover:bg-amber-100/70'
+    if (s === 'polluted') return 'bg-red-50 hover:bg-red-100/70'
+    return 'hover:bg-surface-50'
+  }
+
   return (
     <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
       <h2 className="font-display font-semibold text-surface-800 mb-4">{title}</h2>
       <p className="text-sm text-surface-500 mb-4">{description}</p>
+
+      {/* Summary for current filtered view (page-based for WQI/date) */}
+      <div className="mb-4 flex flex-wrap gap-4 text-xs sm:text-sm text-surface-600">
+        <div className="rounded-lg bg-surface-50 px-3 py-2 border border-surface-200">
+          <p className="font-medium text-surface-800">Total records</p>
+          <p>{totalRecords}</p>
+        </div>
+        <div className="rounded-lg bg-surface-50 px-3 py-2 border border-surface-200">
+          <p className="font-medium text-surface-800">Stations (current page)</p>
+          <p>{totalStationsCurrentPage}</p>
+        </div>
+        <div className="rounded-lg bg-surface-50 px-3 py-2 border border-surface-200">
+          <p className="font-medium text-surface-800">Average WQI (current page)</p>
+          <p>{data.length > 0 ? avgWqiCurrentPage.toFixed(1) : '—'}</p>
+        </div>
+        <div className="rounded-lg bg-surface-50 px-3 py-2 border border-surface-200">
+          <p className="font-medium text-surface-800">Latest date (current page)</p>
+          <p>{latestDateCurrentPage || '—'}</p>
+        </div>
+      </div>
 
       {/* Filters */}
       <div className="flex flex-wrap gap-4 mb-4">
@@ -146,6 +198,18 @@ export default function DatasetTable({ title = 'Dataset table', description = 'S
           </select>
         </div>
         <div>
+          <label className="label">Data type</label>
+          <select
+            value={dataType}
+            onChange={(e) => { setDataType(e.target.value); setPage(1) }}
+            className="input-field w-auto min-w-[160px]"
+          >
+            {DATA_TYPE_OPTIONS.map((opt) => (
+              <option key={opt.value || 'all'} value={opt.value}>{opt.label}</option>
+            ))}
+          </select>
+        </div>
+        <div>
           <label className="label">Sort by</label>
           <select
             value={sortValue}
@@ -185,20 +249,25 @@ export default function DatasetTable({ title = 'Dataset table', description = 'S
               <th className="px-4 py-2 font-medium text-surface-700">Date</th>
               <th className="px-4 py-2 font-medium text-surface-700">WQI</th>
               <th className="px-4 py-2 font-medium text-surface-700">River Status</th>
+              <th className="px-4 py-2 font-medium text-surface-700">Type</th>
             </tr>
           </thead>
           <tbody>
             {loading ? (
-              <tr><td colSpan={4} className="px-4 py-8 text-center text-surface-500">Loading…</td></tr>
+              <tr><td colSpan={5} className="px-4 py-8 text-center text-surface-500">Loading…</td></tr>
             ) : data.length === 0 ? (
-              <tr><td colSpan={4} className="px-4 py-8 text-center text-surface-500">No data for selected filters.</td></tr>
+              <tr><td colSpan={5} className="px-4 py-8 text-center text-surface-500">No data available for selected filters.</td></tr>
             ) : (
               data.map((r, i) => (
-                <tr key={`${r.station_name}-${r.date}-${i}`} className="border-t border-surface-100">
+                <tr
+                  key={`${r.station_name}-${r.date}-${i}`}
+                  className={`border-t border-surface-100 transition-colors ${rowStatusClass(r.river_status)}`}
+                >
                   <td className="px-4 py-2 font-medium text-surface-800">{r.station_name || '—'}</td>
                   <td className="px-4 py-2 text-surface-800">{r.date || '—'}</td>
                   <td className="px-4 py-2">{r.wqi != null ? Number(r.wqi).toFixed(1) : '—'}</td>
                   <td className="px-4 py-2"><RiverHealthIndicator wqi={r.wqi} compact /></td>
+                  <td className="px-4 py-2 text-surface-600">{r.data_type === 'forecast' ? 'Forecast' : r.data_type === 'simulated_live' ? 'Simulated live' : 'Historical'}</td>
                 </tr>
               ))
             )}

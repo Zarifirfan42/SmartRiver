@@ -60,6 +60,12 @@ export function AuthProvider({ children }) {
     localStorage.removeItem('smartriver_token')
   }, [])
 
+  useEffect(() => {
+    const onLogout = () => logout()
+    window.addEventListener('smartriver:auth-logout', onLogout)
+    return () => window.removeEventListener('smartriver:auth-logout', onLogout)
+  }, [logout])
+
   const isAdmin = user?.role === 'admin'
 
   return (

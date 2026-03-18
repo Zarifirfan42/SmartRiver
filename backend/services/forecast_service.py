@@ -119,14 +119,18 @@ def run_forecast() -> list[dict]:
         model_name="random_forest",
     )
 
-    # Create forecast-based alerts: Slightly Polluted / Polluted predictions.
+    # Create forecast-based alerts only for future dates (date > today).
+    from backend.db.repository import _today_str
+    today = _today_str()
     for rec in forecast:
+        date_str = rec.get("date") or ""
+        if date_str <= today:
+            continue
         status = rec.get("river_status")
         if status not in ("slightly_polluted", "polluted"):
             continue
         station = rec.get("station_name") or rec.get("station_code") or "Unknown"
         wqi = rec.get("wqi")
-        date_str = rec.get("date")
         # Human-readable month/year for the message.
         try:
             when = datetime.fromisoformat(date_str).strftime("%B %Y")
