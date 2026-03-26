@@ -116,6 +116,10 @@ export default function PollutionForecastPage() {
         <p className="text-surface-600 mt-0.5">
           Historical data (up to today) and forecast predictions (from tomorrow onwards). Select year and month range to view predictions; each forecast point uses its original forecast date.
         </p>
+        <div className="text-sm text-surface-500 mt-2">
+          <div>Data Source: Historical, Simulated Live, Forecast</div>
+          <div>Last Updated: {new Date().toLocaleString()}</div>
+        </div>
       </div>
 
       {error && (

@@ -20,7 +20,7 @@ export default function DashboardSummary({
         <p className="text-2xl font-semibold text-cyan-600">{Number(avgWqi).toFixed(1)}</p>
       </div>
       <div className="bg-white rounded-xl border border-slate-200 p-4 shadow-sm">
-        <p className="text-sm text-slate-500">Predicted Average WQI (2025-2028)</p>
+        <p className="text-sm text-slate-500">Predicted Average WQI (2026-2028)</p>
         <p className="text-2xl font-semibold text-blue-600">{Number(predictedAvgWqi2025_2028).toFixed(1)}</p>
       </div>
       <div className="bg-white rounded-xl border border-slate-200 p-4 shadow-sm">

@@ -4,7 +4,6 @@ import { useAuth } from '../context/AuthContext'
 
 /** Before login: only Home, Login, Register. After login: Dashboard, River Health, Forecast, Alerts + Logout */
 const navLinksUnauthenticated = [
-  { to: '/', label: 'Home' },
   { to: '/login', label: 'Login' },
   { to: '/register', label: 'Register' },
 ]
@@ -19,19 +18,23 @@ const navLinksAuthenticated = [
 const keyFeatures = [
   {
     title: 'Dashboard Monitoring',
-    description: 'View WQI trends, station summaries, and status distribution at a glance. All data from your monitoring dataset.',
+    description: 'View WQI trends, station summaries, and status distribution at a glance.',
+    icon: '📊',
   },
   {
     title: 'River Health Visualization',
-    description: 'Explore river health on an interactive map. See latest WQI and status per station with clear visual indicators.',
+    description: 'Explore river health on an interactive map with clear status indicators.',
+    icon: '🗺️',
   },
   {
     title: 'Pollution Forecast',
-    description: 'Predict future water quality using historical data. Compare historical WQI with forecast predictions by station and year.',
+    description: 'Predict future water quality using historical trends and smart forecasting.',
+    icon: '🤖',
   },
   {
     title: 'Alert Monitoring',
-    description: 'Get automatic alerts when river status is Slightly Polluted or Polluted. Historical and forecast alerts in one place.',
+    description: 'Get alerts when river status is Slightly Polluted or Polluted.',
+    icon: '🚨',
   },
 ]
 
@@ -182,10 +185,10 @@ export default function LandingPage() {
               SmartRiver
             </h1>
             <p className="mt-4 text-xl font-medium text-river-600 sm:text-2xl">
-              Smart River Monitoring and Pollution Prediction System
+              SmartRiver monitors and predicts river water quality using data analytics and intelligent forecasting.
             </p>
             <p className="mx-auto mt-6 max-w-2xl text-base text-surface-600 sm:text-lg leading-relaxed">
-              Monitor river health, analyze Water Quality Index (WQI), and predict future pollution trends using intelligent data analysis.
+              Track historical river health, simulate today’s conditions, and visualize tomorrow’s risks with clear, actionable insights.
             </p>
             <div className="mt-10 flex flex-wrap items-center justify-center gap-4">
               {user ? (
@@ -230,11 +233,12 @@ export default function LandingPage() {
             Everything you need to monitor and act on river water quality.
           </p>
           <div className="mt-12 grid gap-6 sm:grid-cols-2 lg:grid-cols-4">
-            {keyFeatures.map(({ title, description }) => (
+            {keyFeatures.map(({ title, description, icon }) => (
               <div
                 key={title}
                 className="rounded-xl border border-surface-200 bg-white p-6 shadow-sm transition hover:border-river-200 hover:shadow-md"
               >
+                <div className="text-2xl mb-3" aria-hidden>{icon}</div>
                 <h3 className="font-display text-lg font-semibold text-surface-900">{title}</h3>
                 <p className="mt-3 text-sm text-surface-600 leading-relaxed">{description}</p>
               </div>

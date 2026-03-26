@@ -278,7 +278,6 @@ def save_alert(
         "prediction_log_id": prediction_log_id,
         "station_code": station_code,
         "message": message,
-        "severity": severity,
         "is_read": False,
         "created_at": datetime.utcnow().isoformat(),
     }
@@ -615,29 +614,99 @@ def get_alerts(unread_only: bool = False, limit: int = 50) -> list[dict]:
 
 
 def get_historical_alerts(limit: int = 100) -> list[dict]:
-    """Historical alerts: alert_type historical (or None) and date <= today. Sorted by date: latest first."""
+    """
+    Historical alerts (latest record per station):
+    - Use readings with reading_date <= today
+    - If latest status is slightly_polluted or polluted -> alert
+    - No severity concept; message is computed from status.
+    - Sorted by date: latest first.
+    """
     today = _today_str()
-    alerts = [
-        a for a in _store["alerts"]
-        if ((a.get("alert_type") or "").lower() == "historical" or a.get("alert_type") is None)
-        and ((a.get("date") or "") <= today or not a.get("date"))
-    ]
-    def _key(a: dict) -> str:
-        return (a.get("date") or a.get("created_at") or "")
-    return sorted(alerts, key=_key, reverse=True)[:limit]
+    # Latest reading per station.
+    from collections import defaultdict
+    by_station = defaultdict(list)
+    for r in _store["readings"]:
+        if (r.get("reading_date") or "") <= today:
+            key = r.get("station_name") or r.get("station_code", "")
+            if key:
+                by_station[key].append(r)
+
+    latest_records: list[dict] = []
+    for _, rows in by_station.items():
+        rows = sorted(rows, key=lambda x: x.get("reading_date", ""))
+        if rows:
+            latest_records.append(rows[-1])
+
+    def _message(status: str) -> str:
+        if status == "slightly_polluted":
+            return "Monitor closely"
+        if status == "polluted":
+            return "Immediate attention required"
+        return ""
+
+    alerts: list[dict] = []
+    for rec in latest_records:
+        status = _status_from_reading(rec)
+        if status not in ("slightly_polluted", "polluted"):
+            continue
+        date_str = rec.get("reading_date")
+        alerts.append({
+            "station_code": rec.get("station_code"),
+            "station_name": rec.get("station_name") or rec.get("station_code"),
+            "date": date_str,
+            "wqi": rec.get("wqi"),
+            "river_status": status,
+            "message": _message(status),
+            "alert_type": "historical",
+        })
+
+    alerts.sort(key=lambda a: a.get("date") or "", reverse=True)
+    return alerts[:limit]
 
 
 def get_forecast_alerts(limit: int = 100) -> list[dict]:
-    """Forecast alerts: alert_type forecast and date > today. Sorted by forecast date: earliest first."""
+    """
+    Forecast alerts (future prediction points):
+    - Read from latest forecast prediction_logs
+    - Use only dates > today (so forecast starts strictly from tomorrow)
+    - Keep slightly_polluted or polluted
+    - No severity concept; message computed from status
+    - Sorted by earliest forecast date first
+    """
     today = _today_str()
-    alerts = [
-        a for a in _store["alerts"]
-        if (a.get("alert_type") or "").lower() == "forecast"
-        and (a.get("date") or "") > today
-    ]
-    def _key(a: dict) -> str:
-        return (a.get("date") or a.get("created_at") or "")
-    return sorted(alerts, key=_key, reverse=False)[:limit]
+    logs = [l for l in _store["prediction_logs"] if l.get("prediction_type") == "forecast"]
+    if not logs:
+        return []
+    latest = sorted(logs, key=lambda x: x.get("created_at", ""))[-1]
+    forecast_points = latest.get("result_json", {}).get("forecast", [])
+
+    def _message(status: str) -> str:
+        if status == "slightly_polluted":
+            return "Monitor closely"
+        if status == "polluted":
+            return "Immediate attention required"
+        return ""
+
+    alerts: list[dict] = []
+    for p in forecast_points:
+        date_str = p.get("date") or ""
+        if not date_str or date_str <= today:
+            continue
+        status = p.get("river_status")
+        if status not in ("slightly_polluted", "polluted"):
+            continue
+        alerts.append({
+            "station_code": p.get("station_code"),
+            "station_name": p.get("station_name") or p.get("station_code"),
+            "date": date_str,
+            "wqi": p.get("wqi"),
+            "river_status": status,
+            "message": _message(status),
+            "alert_type": "forecast",
+        })
+
+    alerts.sort(key=lambda a: a.get("date") or "")
+    return alerts[:limit]
 
 
 def get_latest_dataset() -> Optional[dict]:

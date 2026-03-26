@@ -73,9 +73,13 @@ export default function RiverMap({ stations = [], center = [4.2105, 101.9758], z
   useEffect(() => setMounted(true), [])
 
   const defaultStations = [
-    { station_code: 'S01', station_name: 'Sungai Klang', latitude: 3.1390, longitude: 101.6869, latest_wqi: 72, river_status: 'slightly_polluted' },
-    { station_code: 'S02', station_name: 'Sungai Gombak', latitude: 3.2569, longitude: 101.7172, latest_wqi: 85, river_status: 'clean' },
-    { station_code: 'S03', station_name: 'Sungai Pinang', latitude: 5.4167, longitude: 100.3333, latest_wqi: 48, river_status: 'polluted' },
+    // Fallback markers (used only when backend stations are not available yet).
+    // Coordinates required by spec: Kulim→Kedah, Klang→Selangor, Gombak→Selangor, Perak→Perak, Pinang→Penang.
+    { station_code: 'Sungai Kulim', station_name: 'Sungai Kulim', latitude: 5.6710, longitude: 100.5660, latest_wqi: 72, river_status: 'slightly_polluted' },
+    { station_code: 'Sungai Klang', station_name: 'Sungai Klang', latitude: 3.1390, longitude: 101.6869, latest_wqi: 85, river_status: 'clean' },
+    { station_code: 'Sungai Gombak', station_name: 'Sungai Gombak', latitude: 3.2330, longitude: 101.7240, latest_wqi: 80, river_status: 'slightly_polluted' },
+    { station_code: 'Sungai Perak', station_name: 'Sungai Perak', latitude: 4.5921, longitude: 101.0901, latest_wqi: 55, river_status: 'polluted' },
+    { station_code: 'Sungai Pinang', station_name: 'Sungai Pinang', latitude: 5.4141, longitude: 100.3288, latest_wqi: 48, river_status: 'polluted' },
   ]
 
   const list = stations.length ? stations : (useDefaultStations ? defaultStations : [])

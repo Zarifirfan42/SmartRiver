@@ -1,17 +1,18 @@
 """
-Time-series forecast service: predict WQI for 2025-2028 per station.
-Uses Random Forest regression on historical data (2023-2024 only).
+Time-series forecast service: predict WQI for 2026-2028 per station.
+Uses Random Forest regression on historical data.
 Input: Date, Station, Historical WQI. Output: Predicted WQI.
-Predictions are stored in prediction_logs; 2025-2028 are never treated as real measurements.
+Predictions are stored in prediction_logs; forecast dates are never treated as real measurements.
 """
 from pathlib import Path
 from typing import Optional
-from datetime import datetime
+from datetime import datetime, timedelta
 
 ROOT = Path(__file__).resolve().parents[2]
 
 # Forecast years: generate predictions for these years (not from dataset).
-FORECAST_YEARS = [2025, 2026, 2027, 2028]
+# Requirement: remove 2025 from forecast (2025 is historical).
+FORECAST_YEARS = [2026, 2027, 2028]
 
 # Predicted river status from WQI (same rule as elsewhere).
 def _predicted_status(wqi: float) -> str:
@@ -24,8 +25,8 @@ def _predicted_status(wqi: float) -> str:
 
 def run_forecast() -> list[dict]:
     """
-    Train a time-series forecast model on historical WQI (readings with year <= 2024).
-    Generate predictions per station for 2025, 2026, 2027, 2028.
+    Train a time-series forecast model on historical WQI (readings with year <= 2025).
+    Generate daily predictions per station for 2026, 2027, 2028.
     Saves to prediction_logs and returns the forecast list.
     """
     import sys
@@ -62,12 +63,17 @@ def run_forecast() -> list[dict]:
         if not station:
             continue
         wqi = float(r.get("wqi", 0))
+        # Use correct day-of-year so seasonality works across all month lengths.
+        try:
+            day_of_year = datetime(year, month, day).timetuple().tm_yday
+        except Exception:
+            day_of_year = month * 31 + day  # fallback
         rows.append({
             "station": station,
             "year": year,
             "month": month,
             "day": day,
-            "day_of_year": month * 31 + day,  # simple ordinal
+            "day_of_year": day_of_year,
             "wqi": wqi,
         })
 
@@ -84,15 +90,19 @@ def run_forecast() -> list[dict]:
     model = RandomForestRegressor(n_estimators=100, max_depth=10, random_state=42)
     model.fit(X, y)
 
-    # Generate prediction dates: monthly from 2025-01 to 2028-12 (one point per month per station)
+    # Generate prediction dates: daily for each forecast year.
     forecast = []
     for station in stations:
         station_enc = le.transform([station])[0]
         for year in FORECAST_YEARS:
-            for month in range(1, 13):
-                day = 15  # mid-month
-                day_of_year = month * 31 + 15
-                date_str = f"{year}-{month:02d}-{day:02d}"
+            start_date = datetime(year, 1, 1).date()
+            end_date = datetime(year, 12, 31).date()
+            current = start_date
+            while current <= end_date:
+                month = current.month
+                day = current.day
+                day_of_year = current.timetuple().tm_yday
+                date_str = current.isoformat()
                 X_pred = pd.DataFrame([{
                     "station_encoded": station_enc,
                     "year": year,
@@ -109,6 +119,7 @@ def run_forecast() -> list[dict]:
                     "wqi": pred_wqi,
                     "river_status": status,
                 })
+                current = current + timedelta(days=1)
 
     forecast.sort(key=lambda x: (x["date"], x["station_code"]))
 
@@ -138,12 +149,10 @@ def run_forecast() -> list[dict]:
             when = date_str or "future period"
         status_label = "Slightly Polluted" if status == "slightly_polluted" else "Polluted"
         msg = f"Forecast Warning: {station} predicted to become {status_label} in {when}."
-        severity = "warning" if status == "slightly_polluted" else "critical"
         save_alert(
             station_code=rec.get("station_code") or station,
             station_name=station,
             message=msg,
-            severity=severity,
             prediction_log_id=log["id"],
             wqi=wqi,
             date_str=date_str,

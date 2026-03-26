@@ -1,12 +1,6 @@
 import { Link } from 'react-router-dom'
 import RiverHealthIndicator from './RiverHealthIndicator'
 
-const severityStyles = {
-  critical: 'border-red-200 bg-red-50',
-  warning: 'border-amber-200 bg-amber-50',
-  info: 'border-river-200 bg-river-50',
-}
-
 export default function AnomalyAlerts({ alerts = [], maxItems = 5 }) {
   const list = alerts.slice(0, maxItems)
 
@@ -18,7 +12,7 @@ export default function AnomalyAlerts({ alerts = [], maxItems = 5 }) {
         list.map((alert) => (
           <div
             key={alert.id || alert.date + alert.station_code}
-            className={`rounded-lg border p-3 text-sm ${severityStyles[alert.severity] || severityStyles.info}`}
+            className="rounded-lg border border-surface-200 bg-white p-3 text-sm"
           >
             <div className="flex items-start justify-between gap-2">
               <div>

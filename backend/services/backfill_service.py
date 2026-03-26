@@ -90,8 +90,10 @@ def run_backfill() -> None:
       except (TypeError, ValueError):
         prev_wqi = 0.0
 
-    # Loop from earliest date up to today (inclusive)
-    while current <= today:
+    # Loop from earliest date up to yesterday.
+    # Leave "today" for simulated live generation so we can label it as simulated_live
+    # (and still keep daily continuity after live generation runs).
+    while current < today:
       d_str = current.isoformat()
       if d_str in existing_by_date:
         # Use this actual reading as new prev_wqi

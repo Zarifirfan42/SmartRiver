@@ -25,8 +25,10 @@ STATION_CODE_TO_NAME = {
 }
 
 # Historical data cutoff: only dates up to and including this year are treated as real measurements.
-# Dates in 2025-2028 are NOT used as observations; they are generated as forecast predictions only.
-HISTORICAL_CUTOFF_YEAR = 2024
+# Dates in the forecast horizon are NOT used as observations; they are generated as forecast predictions only.
+#
+# Requirement: remove 2025 from forecast (2025 is historical).
+HISTORICAL_CUTOFF_YEAR = 2025
 
 # Station coordinates for real river locations (used when station name is known).
 STATION_COORDINATES = {

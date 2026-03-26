@@ -21,8 +21,9 @@ const DATA_TYPE_OPTIONS = [
   { value: 'forecast', label: 'Forecast (after today)' },
 ]
 
-export default function DatasetTable({ title = 'Dataset table', description = 'Station Name, Date, WQI, River Status. Filter and sort from dataset.', onDataChange }) {
+export default function DatasetTable({ title = 'Dataset table', description = 'Station Name, Date, WQI, River Status. Filter and sort from dataset.', onDataChange, onQueryChange }) {
   const [stations, setStations] = useState([])
+  const [years, setYears] = useState([])
   const [data, setData] = useState([])
   const [total, setTotal] = useState(0)
   const [loading, setLoading] = useState(true)
@@ -31,6 +32,8 @@ export default function DatasetTable({ title = 'Dataset table', description = 'S
   const [stationName, setStationName] = useState('')
   const [dateFrom, setDateFrom] = useState('')
   const [dateTo, setDateTo] = useState('')
+  const [monthYear, setMonthYear] = useState('')
+  const [monthFilter, setMonthFilter] = useState('')
   const [status, setStatus] = useState('')
   const [dataType, setDataType] = useState('')
   const [sortValue, setSortValue] = useState('date_asc')
@@ -49,16 +52,41 @@ export default function DatasetTable({ title = 'Dataset table', description = 'S
 
   useEffect(() => {
     let cancelled = false
+    dashboardApi.getYears().then((res) => {
+      if (!cancelled) setYears(Array.isArray(res) ? res : [])
+    }).catch(() => { if (!cancelled) setYears([]) })
+    return () => { cancelled = true }
+  }, [])
+
+  useEffect(() => {
+    let cancelled = false
     setLoading(true)
     const offset = (page - 1) * pageSize
-    const params = {
+    const effYear = monthYear || undefined
+    const effMonth = monthFilter !== '' ? Number(monthFilter) : undefined
+    const effectiveDateFrom =
+      effYear && effMonth
+        ? `${effYear}-${String(effMonth).padStart(2, '0')}-01`
+        : (dateFrom || undefined)
+    const effectiveDateTo =
+      effYear && effMonth
+        ? `${effYear}-${String(effMonth).padStart(2, '0')}-${new Date(Number(effYear), effMonth, 0).getDate()}`
+        : (dateTo || undefined)
+    const query = {
       station_name: stationName || undefined,
-      date_from: dateFrom || undefined,
-      date_to: dateTo || undefined,
+      date_from: effectiveDateFrom,
+      date_to: effectiveDateTo,
       status: status || undefined,
       data_type: dataType || undefined,
       sort_by: sortOption.sort_by,
       sort_order: sortOption.sort_order,
+    }
+    if (typeof onQueryChange === 'function') {
+      onQueryChange(query)
+    }
+
+    const params = {
+      ...query,
       limit: pageSize,
       offset,
     }
@@ -95,7 +123,7 @@ export default function DatasetTable({ title = 'Dataset table', description = 'S
       })
       .finally(() => { if (!cancelled) setLoading(false) })
     return () => { cancelled = true }
-  }, [stationName, dateFrom, dateTo, status, dataType, sortValue, pageSize, page])
+  }, [stationName, dateFrom, dateTo, monthYear, monthFilter, status, dataType, sortValue, pageSize, page])
 
   const totalPages = Math.max(1, Math.ceil(total / pageSize))
   const startRow = total === 0 ? 0 : (page - 1) * pageSize + 1
@@ -163,6 +191,32 @@ export default function DatasetTable({ title = 'Dataset table', description = 'S
               <option key={s.station_code} value={s.station_name || s.station_code}>
                 {s.station_name || s.station_code}
               </option>
+            ))}
+          </select>
+        </div>
+        <div>
+          <label className="label">Year</label>
+          <select
+            value={monthYear}
+            onChange={(e) => { setMonthYear(e.target.value); setPage(1) }}
+            className="input-field w-auto min-w-[140px]"
+          >
+            <option value="">All years</option>
+            {years.map((y) => (
+              <option key={y} value={String(y)}>{y}</option>
+            ))}
+          </select>
+        </div>
+        <div>
+          <label className="label">Month</label>
+          <select
+            value={monthFilter}
+            onChange={(e) => { setMonthFilter(e.target.value); setPage(1) }}
+            className="input-field w-auto min-w-[140px]"
+          >
+            <option value="">All months</option>
+            {Array.from({ length: 12 }, (_, i) => i + 1).map((m) => (
+              <option key={m} value={String(m)}>{m}</option>
             ))}
           </select>
         </div>
@@ -248,15 +302,14 @@ export default function DatasetTable({ title = 'Dataset table', description = 'S
               <th className="px-4 py-2 font-medium text-surface-700">Station Name</th>
               <th className="px-4 py-2 font-medium text-surface-700">Date</th>
               <th className="px-4 py-2 font-medium text-surface-700">WQI</th>
-              <th className="px-4 py-2 font-medium text-surface-700">River Status</th>
-              <th className="px-4 py-2 font-medium text-surface-700">Type</th>
+              <th className="px-4 py-2 font-medium text-surface-700">Status</th>
             </tr>
           </thead>
           <tbody>
             {loading ? (
-              <tr><td colSpan={5} className="px-4 py-8 text-center text-surface-500">Loading…</td></tr>
+              <tr><td colSpan={4} className="px-4 py-8 text-center text-surface-500">Loading…</td></tr>
             ) : data.length === 0 ? (
-              <tr><td colSpan={5} className="px-4 py-8 text-center text-surface-500">No data available for selected filters.</td></tr>
+              <tr><td colSpan={4} className="px-4 py-8 text-center text-surface-500">No data available for selected filters.</td></tr>
             ) : (
               data.map((r, i) => (
                 <tr
@@ -266,8 +319,9 @@ export default function DatasetTable({ title = 'Dataset table', description = 'S
                   <td className="px-4 py-2 font-medium text-surface-800">{r.station_name || '—'}</td>
                   <td className="px-4 py-2 text-surface-800">{r.date || '—'}</td>
                   <td className="px-4 py-2">{r.wqi != null ? Number(r.wqi).toFixed(1) : '—'}</td>
-                  <td className="px-4 py-2"><RiverHealthIndicator wqi={r.wqi} compact /></td>
-                  <td className="px-4 py-2 text-surface-600">{r.data_type === 'forecast' ? 'Forecast' : r.data_type === 'simulated_live' ? 'Simulated live' : 'Historical'}</td>
+                  <td className="px-4 py-2">
+                    <RiverHealthIndicator wqi={r.wqi} compact />
+                  </td>
                 </tr>
               ))
             )}

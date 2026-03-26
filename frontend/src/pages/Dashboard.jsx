@@ -64,6 +64,7 @@ function exportPrint(rows) {
 
 export default function Dashboard() {
   const { isAdmin } = useAuth()
+  const lastUpdated = new Date().toLocaleString()
   const [summary, setSummary] = useState({
     totalStations: 0,
     avgWqi: 0,
@@ -95,6 +96,7 @@ export default function Dashboard() {
 
   // Export — uses filtered dataset table rows (no extra reload)
   const [exportData, setExportData] = useState([])
+  const [exportQuery, setExportQuery] = useState(null)
 
   // Latest critical alert for dashboard panel
   const [latestCriticalAlert, setLatestCriticalAlert] = useState(null)
@@ -134,6 +136,28 @@ export default function Dashboard() {
     load()
     return () => { cancelled = true }
   }, [])
+
+  async function handleExportCsv() {
+    try {
+      const rows = exportQuery
+        ? await dashboardApi.getReadingsTable({ ...exportQuery, limit: 100000, offset: 0 })
+        : exportData
+      exportCsv(rows)
+    } catch {
+      exportCsv(exportData)
+    }
+  }
+
+  async function handleExportPrint() {
+    try {
+      const rows = exportQuery
+        ? await dashboardApi.getReadingsTable({ ...exportQuery, limit: 100000, offset: 0 })
+        : exportData
+      exportPrint(rows)
+    } catch {
+      exportPrint(exportData)
+    }
+  }
 
   useEffect(() => {
     let cancelled = false
@@ -183,13 +207,12 @@ export default function Dashboard() {
     dashboardApi.getAlertsByType({ limit: 200 }).then(({ historical, forecast }) => {
       if (cancelled) return
       const combined = [...(Array.isArray(historical) ? historical : []), ...(Array.isArray(forecast) ? forecast : [])]
-      const critical = combined.filter((a) => (a.severity || '').toLowerCase() === 'critical')
-      const sorted = critical.sort((a, b) => {
-        const da = a.date || ''
-        const db = b.date || ''
-        return db.localeCompare(da)
-      })
-      setLatestCriticalAlert(sorted[0] || null)
+      const polluted = combined.filter((a) => (a.river_status || '').toLowerCase() === 'polluted')
+      const slightly = combined.filter((a) => (a.river_status || '').toLowerCase() === 'slightly_polluted')
+      const sortDesc = (arr) => arr.sort((a, b) => (b.date || '').localeCompare(a.date || ''))
+      const latestPolluted = sortDesc(polluted)[0]
+      const latestSlightly = sortDesc(slightly)[0]
+      setLatestCriticalAlert(latestPolluted || latestSlightly || null)
     }).catch(() => { if (!cancelled) setLatestCriticalAlert(null) })
     return () => { cancelled = true }
   }, [])
@@ -197,6 +220,10 @@ export default function Dashboard() {
   return (
     <div className="space-y-6">
       <h1 className="text-2xl font-semibold text-slate-900">Dashboard</h1>
+      <div className="text-sm text-surface-500">
+        <div>Data Source: Historical, Simulated Live, Forecast</div>
+        <div>Last Updated: {lastUpdated}</div>
+      </div>
       {error && (
         <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-2 text-sm text-amber-800">
           {error}. Ensure the backend is running; dataset loads from datasets/Lampiran A - Sungai Kulim.xlsx on startup.
@@ -252,7 +279,11 @@ export default function Dashboard() {
             <span aria-hidden>🚨</span>{' '}
             {latestCriticalAlert.message && String(latestCriticalAlert.message).trim()
               ? latestCriticalAlert.message.trim()
-              : `${latestCriticalAlert.station_name || latestCriticalAlert.station_code || 'Unknown'} is polluted${latestCriticalAlert.wqi != null ? ` (WQI: ${Number(latestCriticalAlert.wqi).toFixed(0)})` : ''}.`}
+              : `${latestCriticalAlert.station_name || latestCriticalAlert.station_code || 'Unknown'} — ${
+                (latestCriticalAlert.river_status || '').toLowerCase() === 'slightly_polluted'
+                  ? 'Monitor closely'
+                  : 'Immediate attention required'
+              }`}
           </p>
           <Link to="/alerts" className="inline-block mt-2 text-sm font-medium text-red-700 hover:text-red-900 underline">
             View all alerts →
@@ -276,14 +307,14 @@ export default function Dashboard() {
         <div className="flex flex-wrap gap-3">
           <button
             type="button"
-            onClick={() => exportCsv(exportData)}
+            onClick={handleExportCsv}
             className="btn-primary"
           >
             Download CSV
           </button>
           <button
             type="button"
-            onClick={() => exportPrint(exportData)}
+            onClick={handleExportPrint}
             className="btn-secondary"
           >
             Print Report
@@ -297,6 +328,7 @@ export default function Dashboard() {
           title="Dataset overview"
           description="Filtered view of dataset records: Station Name, Date, WQI, and River Status, with sorting and pagination."
           onDataChange={setExportData}
+          onQueryChange={setExportQuery}
         />
       </div>
 
