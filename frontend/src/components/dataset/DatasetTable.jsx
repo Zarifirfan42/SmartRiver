@@ -72,15 +72,15 @@ export default function DatasetTable({ title = 'Dataset table', description = 'S
       effYear && effMonth
         ? `${effYear}-${String(effMonth).padStart(2, '0')}-${new Date(Number(effYear), effMonth, 0).getDate()}`
         : (dateTo || undefined)
-    const query = {
-      station_name: stationName || undefined,
-      date_from: effectiveDateFrom,
-      date_to: effectiveDateTo,
-      status: status || undefined,
-      data_type: dataType || undefined,
-      sort_by: sortOption.sort_by,
-      sort_order: sortOption.sort_order,
-    }
+
+    // Build query without sending "undefined"/empty-string values.
+    // This prevents backend filters from accidentally excluding all rows.
+    const query = { sort_by: sortOption.sort_by, sort_order: sortOption.sort_order }
+    if (stationName) query.station_name = stationName
+    if (effectiveDateFrom) query.date_from = effectiveDateFrom
+    if (effectiveDateTo) query.date_to = effectiveDateTo
+    if (status) query.status = status
+    if (dataType) query.data_type = dataType
     if (typeof onQueryChange === 'function') {
       onQueryChange(query)
     }
@@ -90,19 +90,35 @@ export default function DatasetTable({ title = 'Dataset table', description = 'S
       limit: pageSize,
       offset,
     }
+
+    if (import.meta.env.DEV) {
+      console.debug('[SmartRiver] DatasetTable query:', { params })
+    }
+
+    const countParams = {}
+    if (query.station_name) countParams.station_name = query.station_name
+    if (query.date_from) countParams.date_from = query.date_from
+    if (query.date_to) countParams.date_to = query.date_to
+    if (query.status) countParams.status = query.status
+    if (query.data_type) countParams.data_type = query.data_type
+
     Promise.all([
       dashboardApi.getReadingsTable(params),
       dashboardApi.getReadingsCount({
-        station_name: params.station_name,
-        date_from: params.date_from,
-        date_to: params.date_to,
-        status: params.status,
-        data_type: params.data_type,
+        ...countParams,
       }),
     ])
       .then(([rows, count]) => {
         if (!cancelled) {
           const safeRows = Array.isArray(rows) ? rows : []
+          if (import.meta.env.DEV) {
+            console.log('Before filter:', Number(count) || 0)
+            console.log('After filter:', safeRows.length)
+            console.debug('[SmartRiver] DatasetTable rows (after backend filter):', {
+              received: safeRows.length,
+              total: count,
+            })
+          }
           setData(safeRows)
           setTotal(Number(count) || 0)
           setError(null)

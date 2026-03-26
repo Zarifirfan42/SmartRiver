@@ -74,6 +74,13 @@ try:
 except ImportError as e:
     print("Warning: register_routes failed:", e)
 
+# Legacy alias for dataset records (requested: GET /api/water-quality)
+try:
+    from backend.controllers.water_quality_controller import router as wq_router
+    app.include_router(wq_router, prefix="/api/water-quality", tags=["Water Quality"])
+except Exception as e:
+    print("Warning: /api/water-quality could not be loaded:", e)
+
 # Ensure auth is always mounted (login/register) even if routes had a partial failure
 try:
     from backend.controllers.auth_controller import router as auth_router

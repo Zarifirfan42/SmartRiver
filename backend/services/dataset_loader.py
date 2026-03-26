@@ -6,17 +6,18 @@ Values come from the loaded file (or bundled sample) — not from UI copy.
 """
 from pathlib import Path
 from typing import Optional
+import os
 
 from backend.db.repository import status_from_wqi
 
 ROOT = Path(__file__).resolve().parents[2]
 
-# Default dataset paths: Excel first, then CSV, then bundled sample CSV.
+# Default dataset paths.
+# IMPORTANT: user request — use `sample_water_quality.csv` by default.
 DEFAULT_DATASET_NAME = "River Monitoring Dataset"
+DEFAULT_SAMPLE_CSV = ROOT / "datasets" / "sample_water_quality.csv"
 DEFAULT_DATASET_PATHS = [
-    ROOT / "datasets" / f"{DEFAULT_DATASET_NAME}.xlsx",
-    ROOT / "datasets" / f"{DEFAULT_DATASET_NAME}.csv",
-    ROOT / "datasets" / "sample_water_quality.csv",
+    DEFAULT_SAMPLE_CSV,
 ]
 
 # Map station codes to display names for CSVs that have no Station Name (e.g. sample_water_quality.csv).
@@ -62,6 +63,42 @@ def _normalize_column(df, possible_names, default=None):
     return default
 
 
+def _is_dataframe_quality_ok(df) -> bool:
+    """
+    Basic quality gate to avoid accepting broken intermediate exports.
+    Requires usable station names and dates.
+    """
+    if df is None or df.empty:
+        return False
+
+    if "station_name" not in df.columns:
+        return False
+    if "date" not in df.columns:
+        return False
+
+    station_col = df["station_name"]
+    date_col = df["date"]
+    # If duplicate column names exist, pandas returns a DataFrame; pick first column.
+    if hasattr(station_col, "columns"):
+        station_col = station_col.iloc[:, 0]
+    if hasattr(date_col, "columns"):
+        date_col = date_col.iloc[:, 0]
+
+    station_series = station_col.astype(str).str.strip()
+    date_series = date_col.astype(str).str.strip()
+
+    # at least some rows with non-empty date
+    if (date_series != "").sum() == 0:
+        return False
+
+    # station names should contain letters for real river/station labels
+    has_alpha = station_series.str.contains(r"[A-Za-z]", regex=True, na=False)
+    if has_alpha.sum() == 0:
+        return False
+
+    return True
+
+
 def _normalize_river_status(val):
     """Normalize river status to clean | slightly_polluted | polluted from dataset values."""
     if val is None or (isinstance(val, float) and (val != val)):
@@ -102,7 +139,8 @@ def load_dataset_dataframe(path: Path):
         return None
 
     if path.suffix.lower() in (".xlsx", ".xls"):
-        df = pd.read_excel(path, engine="openpyxl")
+        # Let pandas select the engine (openpyxl is typical for .xlsx).
+        df = pd.read_excel(path)
     else:
         df = pd.read_csv(path)
 
@@ -111,19 +149,34 @@ def load_dataset_dataframe(path: Path):
 
     # Normalize columns to match dataset structure: Station Name, Date, WQI, River Status, BOD, COD, SS, pH, NH3-N
     col_map = {}
-    station_name_col = _normalize_column(df, ["Station Name", "Station name", "station_name", "Station", "station", "STATION"])
-    station_code_col = _normalize_column(df, ["station_code", "Station Code", "station code"])
+    station_name_col = _normalize_column(
+        df,
+        [
+            # Prefer DOE labels first
+            "SUNGAI",
+            "Sungai",
+            "LOCATION",
+            "location",
+            "Station Name",
+            "Station name",
+            "station_name",
+            "Station",
+            "station",
+            "STATION",
+        ],
+    )
+    station_code_col = _normalize_column(df, ["station_code", "Station Code", "station code", "ID STN (2016)", "ID STN BARU", "ID_STN"])
     if station_name_col:
         col_map[station_name_col] = "station_name"
     if station_code_col:
         col_map[station_code_col] = "station_code"
-    date_col = _normalize_column(df, ["Date", "date", "DATE", "Tarikh"])
+    date_col = _normalize_column(df, ["SMP-DAT", "SMP_DAT", "SMP-DAT\n", "Date", "date", "DATE", "Tarikh"])
     if date_col:
         col_map[date_col] = "date"
     wqi_col = _normalize_column(df, ["WQI", "wqi", "Wqi"])
     if wqi_col:
         col_map[wqi_col] = "WQI"
-    status_col = _normalize_column(df, ["River Status", "river_status", "River status", "Status", "status"])
+    status_col = _normalize_column(df, ["River Status", "river_status", "River status", "Status", "status", "RIVER\nSTATUS", "CLASS"])
     if status_col:
         col_map[status_col] = "river_status"
     for orig, new in [("BOD", "BOD"), ("COD", "COD"), ("SS", "SS"), ("TSS", "TSS"), ("pH", "pH"), ("NH3-N", "NH3-N"), ("AN", "AN")]:
@@ -132,6 +185,10 @@ def load_dataset_dataframe(path: Path):
             col_map[c] = new
 
     df = df.rename(columns=col_map)
+    # Keep first occurrence when renaming creates duplicate column names
+    # (e.g. existing station_name plus SUNGAI mapped to station_name).
+    if df.columns.duplicated().any():
+        df = df.loc[:, ~df.columns.duplicated()].copy()
 
     # Ensure required columns: use station_name as primary (full names e.g. Sungai Pinang, Sungai Klang)
     if "station_name" not in df.columns and station_name_col:
@@ -176,10 +233,19 @@ def dataframe_to_readings(df) -> list[dict]:
     readings = []
     for _, row in df.iterrows():
         date_val = row.get("date", row.get("Date", ""))
-        if hasattr(date_val, "strftime"):
-            date_val = date_val.strftime("%Y-%m-%d")
+        # Always normalize to ISO date string so backend comparisons work.
+        if date_val:
+            if hasattr(date_val, "strftime"):
+                date_val = date_val.strftime("%Y-%m-%d")
+            else:
+                try:
+                    import pandas as pd
+                    parsed = pd.to_datetime(date_val, errors="coerce")
+                    date_val = parsed.strftime("%Y-%m-%d") if parsed is not None and parsed == parsed else str(date_val)[:10]
+                except Exception:
+                    date_val = str(date_val)[:10]
         else:
-            date_val = str(date_val)[:10] if date_val else ""
+            date_val = ""
         # Use full station name from dataset (e.g. Sungai Pinang, Sungai Klang)
         station_name = str(row.get("station_name", row.get("Station Name", ""))).strip() or "Unknown"
         station_code = station_name  # use same for API compatibility
@@ -217,22 +283,60 @@ def load_default_dataset() -> Optional[object]:
     Load default dataset from datasets/River Monitoring Dataset.xlsx (or .csv), else sample CSV.
     Returns the pandas DataFrame if loaded. All data from file only.
     """
-    for path in DEFAULT_DATASET_PATHS:
-        if path.exists():
+    datasets_dir = ROOT / "datasets"
+
+    # Candidate order: always start with sample_water_quality.csv (if present).
+    candidates: list[Path] = []
+    for p in DEFAULT_DATASET_PATHS:
+        if p.exists():
+            candidates.append(p)
+
+    if not candidates:
+        # If sample is missing, fall back to any other dataset file.
+        print("Dataset loader: sample_water_quality.csv missing; falling back to other datasets.")
+        named_csv = ROOT / "datasets" / f"{DEFAULT_DATASET_NAME}.csv"
+        named_xlsx = ROOT / "datasets" / f"{DEFAULT_DATASET_NAME}.xlsx"
+        for p in [named_csv, named_xlsx]:
+            if p.exists():
+                candidates.append(p)
+
+        # Final fallback: newest CSV in datasets/
+        if not candidates and datasets_dir.exists():
+            csvs = sorted([p for p in datasets_dir.glob("*.csv") if p.is_file()], key=lambda x: x.stat().st_mtime, reverse=True)
+            if csvs:
+                candidates.append(csvs[0])
+
+    if not candidates:
+        print("Dataset loader: no dataset file found in datasets/.")
+        return None
+
+    last_err: Optional[str] = None
+    for path in candidates:
+        try:
             df = load_dataset_dataframe(path)
             if df is not None and not df.empty:
+                if not _is_dataframe_quality_ok(df):
+                    print(f"Dataset loader: rejected low-quality parse for {path.name}; trying next candidate.")
+                    continue
+                print(f"Dataset loader: selected {path.name} with shape={df.shape}")
+                # If we successfully loaded Excel, also export a CSV copy so future runs
+                # can load without requiring an Excel engine.
+                try:
+                    if path.suffix.lower() in (".xlsx", ".xls"):
+                        csv_path = ROOT / "datasets" / f"{DEFAULT_DATASET_NAME}.csv"
+                        if not csv_path.exists():
+                            df.to_csv(csv_path, index=False)
+                            print(f"Exported CSV copy: {csv_path}")
+                except Exception as e:
+                    print("CSV export skipped:", e)
                 return df
+        except Exception as e:
+            last_err = str(e)
+            print(f"Dataset loader: failed reading {path.name}: {e}")
+            continue
 
-    # No file found: create minimal sample so app does not crash (still dataset-shaped)
-    import pandas as pd
-    sample = pd.DataFrame([
-        {"date": "2024-01-01", "station_name": "Sungai Kulim", "WQI": 72, "river_status": "slightly_polluted"},
-        {"date": "2024-01-02", "station_name": "Sungai Kulim", "WQI": 78, "river_status": "slightly_polluted"},
-        {"date": "2024-01-01", "station_name": "Sungai Pinang", "WQI": 85, "river_status": "clean"},
-        {"date": "2024-01-02", "station_name": "Sungai Pinang", "WQI": 82, "river_status": "clean"},
-        {"date": "2024-01-01", "station_name": "Sungai Klang", "WQI": 55, "river_status": "polluted"},
-    ])
-    return sample
+    print(f"Dataset loader: all candidate datasets failed. Last error: {last_err}")
+    return None
 
 
 def run_startup_data_load():
@@ -262,6 +366,7 @@ def run_startup_data_load():
         return
 
     save_readings(1, readings)
+    print(f"Dataset loaded readings count: {len(readings)}")
 
     # Ensure each station has coordinates in _store["stations"] for the map
     seen = set()
@@ -313,6 +418,13 @@ def run_startup_data_load():
             )
     except Exception:
         pass
+
+    # Heavy startup tasks (anomaly/forecast/backfill/live) are optional.
+    # They can make app startup slow and block API availability.
+    run_heavy = os.environ.get("SMARTRIVER_RUN_HEAVY_STARTUP", "false").strip().lower() == "true"
+    if not run_heavy:
+        print("Heavy startup tasks skipped (set SMARTRIVER_RUN_HEAVY_STARTUP=true to enable).")
+        return
 
     try:
         import pandas as pd

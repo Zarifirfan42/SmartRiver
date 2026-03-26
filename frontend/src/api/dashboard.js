@@ -21,7 +21,9 @@ export async function getForecast(params = {}) {
 
 export async function getStations() {
   const { data } = await api.get('/dashboard/stations')
-  return data.stations || []
+  const stations = data.stations || []
+  if (import.meta.env.DEV) console.debug('[SmartRiver] /dashboard/stations:', { count: stations.length })
+  return stations
 }
 
 export async function getAlerts(params = {}) {
@@ -50,7 +52,9 @@ export async function getWqiData(params = {}) {
 
 export async function getReadingsTable(params = {}) {
   const { data } = await api.get('/dashboard/readings-table', { params })
-  return data.data || []
+  const rows = data.data || []
+  if (import.meta.env.DEV) console.debug('[SmartRiver] /dashboard/readings-table:', { params, count: rows.length })
+  return rows
 }
 
 export async function getReadingsCount(params = {}) {
