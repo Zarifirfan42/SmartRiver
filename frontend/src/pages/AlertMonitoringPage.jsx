@@ -62,12 +62,13 @@ export default function AlertMonitoringPage() {
   }, [])
 
   const filteredHistorical = useMemo(() => {
-    return historicalAlerts.filter((a) => {
+    const filtered = historicalAlerts.filter((a) => {
       const name = a.station_name || a.station_code || ''
       if (stationFilter && name !== stationFilter) return false
       if (statusFilter && a.river_status !== statusFilter) return false
       return true
     })
+    return [...filtered].sort((a, b) => String(b.date || '').localeCompare(String(a.date || '')))
   }, [historicalAlerts, stationFilter, statusFilter])
 
   const filteredForecast = useMemo(() => {
@@ -83,6 +84,7 @@ export default function AlertMonitoringPage() {
   const slightlyCount = allAlerts.filter((a) => a.river_status === 'slightly_polluted').length
   const pollutedCount = allAlerts.filter((a) => a.river_status === 'polluted').length
 
+  const filtersActive = Boolean(stationFilter || statusFilter)
   const hasNoAlerts = !loading && filteredHistorical.length === 0 && filteredForecast.length === 0
 
   const showHistorical = typeFilter === 'all' || typeFilter === 'historical'
@@ -177,8 +179,12 @@ export default function AlertMonitoringPage() {
 
       {hasNoAlerts && (
         <div className="rounded-xl border border-surface-200 bg-white p-8 text-center">
-          <p className="text-surface-600 font-medium">No alerts detected.</p>
-          <p className="text-sm text-surface-500 mt-2">Try changing filters.</p>
+          <p className="text-surface-600 font-medium">
+            {filtersActive ? 'No alerts match the selected filters.' : 'No alerts. All rivers are clean.'}
+          </p>
+          {filtersActive && (
+            <p className="text-sm text-surface-500 mt-2">Try changing station or status filters.</p>
+          )}
         </div>
       )}
 
@@ -200,7 +206,13 @@ export default function AlertMonitoringPage() {
               </thead>
               <tbody>
                 {!loading && filteredHistorical.length === 0 ? (
-                  <tr><td colSpan={5} className="px-4 py-8 text-center text-surface-500">No historical alerts</td></tr>
+                  <tr>
+                    <td colSpan={5} className="px-4 py-8 text-center text-surface-500">
+                      {filtersActive
+                        ? 'No historical alerts match the selected filters.'
+                        : 'No historical alerts — latest reading per station is clean.'}
+                    </td>
+                  </tr>
                 ) : (
                   filteredHistorical.map((a, i) => (
                     <tr key={`${a.station_name || a.station_code}-${a.date}-${i}`} className="border-t border-surface-100">

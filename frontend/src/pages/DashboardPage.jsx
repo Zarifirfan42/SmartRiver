@@ -2,7 +2,6 @@ import { useState, useEffect } from 'react'
 import WQIGauge from '../components/dashboard/WQIGauge'
 import RiverHealthIndicator from '../components/dashboard/RiverHealthIndicator'
 import TimeSeriesChart from '../components/charts/TimeSeriesChart'
-import ForecastChart from '../components/charts/ForecastChart'
 import AnomalyAlerts from '../components/dashboard/AnomalyAlerts'
 import RiverMap from '../components/map/RiverMap'
 import * as dashboardApi from '../api/dashboard'
@@ -17,7 +16,6 @@ export default function DashboardPage() {
     recentAnomaliesCount: 0,
   })
   const [timeSeries, setTimeSeries] = useState([])
-  const [forecast, setForecast] = useState([])
   const [alerts, setAlerts] = useState([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
@@ -28,10 +26,9 @@ export default function DashboardPage() {
       setLoading(true)
       setError(null)
       try {
-        const [s, series, fc, al] = await Promise.all([
+        const [s, series, al] = await Promise.all([
           dashboardApi.getSummary(),
           dashboardApi.getTimeSeries({ limit: 100 }),
-          dashboardApi.getForecast({ limit: 30 }),
           dashboardApi.getAlerts({ limit: 10 }),
         ])
         if (cancelled) return
@@ -44,7 +41,6 @@ export default function DashboardPage() {
           recentAnomaliesCount: s.recentAnomaliesCount ?? 0,
         })
         setTimeSeries(Array.isArray(series?.series) ? series.series : (Array.isArray(series) ? series : []))
-        setForecast(Array.isArray(fc?.forecast) ? fc.forecast : (Array.isArray(fc) ? fc : []))
         setAlerts(Array.isArray(al) ? al : [])
       } catch (err) {
         if (!cancelled) {
@@ -99,20 +95,10 @@ export default function DashboardPage() {
         </div>
       </div>
 
-      {/* WQI trend + Forecast */}
-      <div className="grid gap-6 lg:grid-cols-2">
-        <div className="card">
-          <h2 className="font-display font-semibold text-surface-800 mb-4">WQI trend</h2>
-          <TimeSeriesChart data={timeSeries} height={280} />
-        </div>
-        <div className="card">
-          <h2 className="font-display font-semibold text-surface-800 mb-4">7–30 day forecast</h2>
-          <ForecastChart
-            historical={timeSeries.slice(-14)}
-            forecast={forecast.map((f) => ({ date: f.date || '', wqi: typeof f === 'number' ? f : (f.wqi ?? null) }))}
-            height={280}
-          />
-        </div>
+      <div className="card">
+        <h2 className="font-display font-semibold text-surface-800 mb-4">WQI trend (historical)</h2>
+        <p className="text-sm text-surface-500 mb-4">Use Pollution Forecast for predicted WQI.</p>
+        <TimeSeriesChart data={timeSeries} height={280} />
       </div>
 
       {/* Anomaly alerts + Map */}

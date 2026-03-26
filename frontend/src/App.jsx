@@ -12,6 +12,7 @@ import PollutionForecastPage from './pages/PollutionForecastPage'
 import AlertMonitoringPage from './pages/AlertMonitoringPage'
 import AnomalyDetectionPage from './pages/AnomalyDetectionPage'
 import DatasetUploadPage from './pages/DatasetUploadPage'
+import FeedbackReportsPage from './pages/FeedbackReportsPage'
 
 function App() {
   return (
@@ -47,6 +48,14 @@ function App() {
               element={
                 <ProtectedRoute requireAdmin>
                   <DatasetUploadPage />
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="feedback-reports"
+              element={
+                <ProtectedRoute requireAdmin>
+                  <FeedbackReportsPage />
                 </ProtectedRoute>
               }
             />

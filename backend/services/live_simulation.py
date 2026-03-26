@@ -29,12 +29,9 @@ SOURCE_SIMULATED_LIVE = "simulated_live"
 
 
 def wqi_to_status(wqi: float) -> str:
-    """Classify WQI into river status. >= 81 Clean, 60–80 Slightly Polluted, < 60 Polluted."""
-    if wqi >= 81:
-        return "clean"
-    if wqi >= 60:
-        return "slightly_polluted"
-    return "polluted"
+    """Classify WQI into river status (same rules as backend.db.repository.status_from_wqi)."""
+    from backend.db.repository import status_from_wqi
+    return status_from_wqi(wqi)
 
 
 def seasonal_delta(month: int) -> float:
@@ -96,8 +93,13 @@ def generate_daily_simulated_readings() -> list[dict]:
 
 
 def _create_historical_alert_for_reading(rec: dict) -> None:
-    """If the reading is slightly_polluted or polluted, create a historical alert."""
-    status = (rec.get("river_status") or "").strip().lower().replace(" ", "_")
+    """If the reading is slightly_polluted or polluted (from WQI), create a historical alert."""
+    from backend.db.repository import status_from_wqi
+    try:
+        wqf = float(rec.get("wqi", 0) or 0)
+    except (TypeError, ValueError):
+        wqf = 0.0
+    status = status_from_wqi(wqf)
     if status not in ("slightly_polluted", "polluted"):
         return
     from backend.db.repository import save_alert

@@ -10,15 +10,6 @@ from datetime import date, datetime, timedelta
 import random
 
 
-def _wqi_to_status(wqi: float) -> str:
-  """Classify WQI into river status."""
-  if wqi >= 81:
-    return "clean"
-  if wqi >= 60:
-    return "slightly_polluted"
-  return "polluted"
-
-
 def run_backfill() -> None:
   """
   For each station in readings:
@@ -26,7 +17,7 @@ def run_backfill() -> None:
   - Loop from earliest date to today (inclusive).
   - If a date is missing, insert a backfilled record based on previous day's WQI.
   """
-  from backend.db.repository import _store, append_reading, _today_str
+  from backend.db.repository import _store, append_reading, _today_str, status_from_wqi
 
   readings = list(_store.get("readings", []))
   if not readings:
@@ -108,7 +99,7 @@ def run_backfill() -> None:
           new_wqi = prev_wqi + step
           # Clamp between 0 and 100
           new_wqi = max(0.0, min(100.0, round(new_wqi, 1)))
-          status = _wqi_to_status(new_wqi)
+          status = status_from_wqi(new_wqi)
 
           # Use known names from any existing row for this station
           ref = sorted_rows[0]

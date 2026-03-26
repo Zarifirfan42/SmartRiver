@@ -1,17 +1,21 @@
 """
 Load default dataset (Excel or CSV) on backend startup.
-Uses datasets/Lampiran A - Sungai Kulim.xlsx. Columns: Station Name, Date, WQI, River Status, BOD, COD, SS, pH, NH3-N.
-All stations, WQI, dates, and status come from the dataset only (no hardcoding).
+Primary file: datasets/River Monitoring Dataset.xlsx (or .csv). Expected columns include
+Station Name, Date, WQI, River Status, BOD, COD, SS, pH, NH3-N where applicable.
+Values come from the loaded file (or bundled sample) — not from UI copy.
 """
 from pathlib import Path
 from typing import Optional
 
+from backend.db.repository import status_from_wqi
+
 ROOT = Path(__file__).resolve().parents[2]
 
-# Default dataset paths: Excel first, then CSV. Include sample_water_quality.csv (has station_code; we map to names and compute WQI if missing).
+# Default dataset paths: Excel first, then CSV, then bundled sample CSV.
+DEFAULT_DATASET_NAME = "River Monitoring Dataset"
 DEFAULT_DATASET_PATHS = [
-    ROOT / "datasets" / "Lampiran A - Sungai Kulim.xlsx",
-    ROOT / "datasets" / "Lampiran A - Sungai Kulim.csv",
+    ROOT / "datasets" / f"{DEFAULT_DATASET_NAME}.xlsx",
+    ROOT / "datasets" / f"{DEFAULT_DATASET_NAME}.csv",
     ROOT / "datasets" / "sample_water_quality.csv",
 ]
 
@@ -149,9 +153,7 @@ def load_dataset_dataframe(path: Path):
     if "river_status" not in df.columns and status_col:
         df["river_status"] = df[status_col]
     if "river_status" not in df.columns and "WQI" in df.columns:
-        df["river_status"] = df["WQI"].apply(
-            lambda w: "clean" if w >= 81 else ("slightly_polluted" if w >= 60 else "polluted")
-        )
+        df["river_status"] = df["WQI"].apply(lambda w: status_from_wqi(float(w or 0)))
 
     # Normalize date to string YYYY-MM-DD
     if "date" in df.columns:
@@ -182,13 +184,7 @@ def dataframe_to_readings(df) -> list[dict]:
         station_name = str(row.get("station_name", row.get("Station Name", ""))).strip() or "Unknown"
         station_code = station_name  # use same for API compatibility
         wqi = float(row.get("WQI", row.get("wqi", 0)) or 0)
-        status = row.get("river_status", "")
-        if status is not None and not isinstance(status, str):
-            status = str(status)
-        status = (status or "").strip() or None
-        status = _normalize_river_status(status) if status else None
-        if not status:
-            status = "clean" if wqi >= 81 else ("slightly_polluted" if wqi >= 60 else "polluted")
+        status = status_from_wqi(wqi)
         readings.append({
             "station_code": station_code,
             "station_name": station_name,
@@ -199,23 +195,10 @@ def dataframe_to_readings(df) -> list[dict]:
     return readings
 
 
-def _normalize_alert_status(river_status, wqi: float) -> str:
-    """Normalize river status for alert logic: accept dataset values like 'Slightly Polluted' or 'slightly_polluted'."""
-    if river_status is not None and str(river_status).strip():
-        s = str(river_status).strip().lower().replace(" ", "_")
-        if "slight" in s or "moderate" in s:
-            return "slightly_polluted"
-        if "pollut" in s:
-            return "polluted"
-        if s == "clean":
-            return "clean"
-    return "clean" if wqi >= 81 else ("slightly_polluted" if wqi >= 60 else "polluted")
-
-
 def get_station_coordinates(station_code: str, index: int) -> tuple[float, float]:
     """Return (lat, lon) for a station (for map).
 
-    If the station matches a known river name (e.g. Sungai Kulim, Sungai Klang),
+    If the station matches a key in STATION_COORDINATES,
     use its real coordinates. Otherwise use the default area + offset by index
     so markers don't overlap.
     """
@@ -231,7 +214,7 @@ def get_station_coordinates(station_code: str, index: int) -> tuple[float, float
 
 def load_default_dataset() -> Optional[object]:
     """
-    Load default dataset from datasets/Lampiran A - Sungai Kulim.xlsx (or CSV).
+    Load default dataset from datasets/River Monitoring Dataset.xlsx (or .csv), else sample CSV.
     Returns the pandas DataFrame if loaded. All data from file only.
     """
     for path in DEFAULT_DATASET_PATHS:
@@ -312,7 +295,7 @@ def run_startup_data_load():
             latest = rows[-1]
             date_str = latest.get("date")
             wqi = float(latest.get("wqi", 0))
-            status = _normalize_alert_status(latest.get("river_status"), wqi)
+            status = status_from_wqi(wqi)
             if status not in ("slightly_polluted", "polluted"):
                 continue
             status_label = "Slightly Polluted" if status == "slightly_polluted" else "Polluted"

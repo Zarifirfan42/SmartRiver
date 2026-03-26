@@ -15,6 +15,29 @@ def _today_str() -> str:
     """Current system date (YYYY-MM-DD) for classifying historical vs forecast."""
     return date.today().isoformat()
 
+
+def status_from_wqi(wqi: float) -> str:
+    """
+    WQI → monitoring status (single source of truth for alerts and summaries).
+    >= 81: Clean; 60 <= WQI < 81: Slightly Polluted; else: Polluted.
+    """
+    try:
+        w = float(wqi)
+    except (TypeError, ValueError):
+        w = 0.0
+    if w >= 81:
+        return "clean"
+    if w >= 60:
+        return "slightly_polluted"
+    return "polluted"
+
+
+def _canonical_station_key(r: dict) -> str:
+    """One group per station: prefer station_code, else station_name."""
+    code = (r.get("station_code") or "").strip()
+    name = (r.get("station_name") or "").strip()
+    return code or name or ""
+
 # In-memory store (mirrors DB tables). Replace with SQL when DATABASE_URL is set.
 _store = {
     "users": [],
@@ -52,6 +75,18 @@ def _ensure_sqlite_schema() -> None:
               full_name TEXT NULL,
               role TEXT NOT NULL DEFAULT 'public',
               is_active INTEGER NOT NULL DEFAULT 1,
+              created_at TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS feedback_reports (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              user_id INTEGER NULL,
+              name TEXT NULL,
+              email TEXT NOT NULL,
+              message TEXT NOT NULL,
               created_at TEXT NOT NULL
             )
             """
@@ -319,12 +354,12 @@ def get_summary() -> dict:
         }
     by_station = defaultdict(list)
     for r in readings:
-        key = r.get("station_name") or r.get("station_code", "")
+        key = _canonical_station_key(r)
         if key:
             by_station[key].append(r)
     latest_records = []
     for _name, rows in by_station.items():
-        rows = sorted(rows, key=lambda x: x.get("reading_date", ""))
+        rows = sorted(rows, key=lambda x: (x.get("reading_date") or "", x.get("id", 0)))
         if rows:
             latest_records.append(rows[-1])
     if not latest_records:
@@ -355,14 +390,12 @@ def get_summary() -> dict:
 
 
 def _status_from_reading(r: dict) -> str:
-    """Normalize river status from a reading (explicit or from WQI)."""
-    st = r.get("river_status")
-    if st:
-        s = str(st).strip().lower().replace(" ", "_")
-        if s in ("clean", "slightly_polluted", "polluted"):
-            return s
-    w = r.get("wqi", 0)
-    return "clean" if w >= 81 else ("slightly_polluted" if w >= 60 else "polluted")
+    """River status from WQI only (dataset text may disagree with numeric WQI)."""
+    try:
+        w = float(r.get("wqi", 0) or 0)
+    except (TypeError, ValueError):
+        w = 0.0
+    return status_from_wqi(w)
 
 
 def get_predicted_avg_wqi_2025_2028() -> float:
@@ -432,10 +465,7 @@ def get_wqi_data(
     readings = sorted(readings, key=lambda x: x.get("reading_date", ""))[-limit:]
     out = []
     for r in readings:
-        status = r.get("river_status")
-        if status is None:
-            w = r.get("wqi", 0)
-            status = "clean" if w >= 81 else ("slightly_polluted" if w >= 60 else "polluted")
+        status = status_from_wqi(float(r.get("wqi", 0) or 0))
         out.append({
             "date": r["reading_date"],
             "station": r.get("station_name") or r.get("station_code"),
@@ -462,11 +492,7 @@ def _apply_readings_filters(
         readings = [r for r in readings if (r.get("reading_date") or "")[:4] == str(year)]
     if status:
         def _status(r):
-            st = r.get("river_status")
-            if st:
-                return str(st).strip().lower().replace(" ", "_")
-            w = r.get("wqi", 0)
-            return "clean" if w >= 81 else ("slightly_polluted" if w >= 60 else "polluted")
+            return status_from_wqi(float(r.get("wqi", 0) or 0))
         status_norm = status.strip().lower().replace(" ", "_")
         readings = [r for r in readings if _status(r) == status_norm]
     if date_from:
@@ -528,10 +554,7 @@ def get_readings_table(
         forecast = forecast[offset : offset + limit]
         out = []
         for r in forecast:
-            st = r.get("river_status")
-            if st is None:
-                w = r.get("wqi", 0)
-                st = "clean" if w >= 81 else ("slightly_polluted" if w >= 60 else "polluted")
+            st = status_from_wqi(float(r.get("wqi", 0) or 0))
             out.append({
                 "station_name": r.get("station_name") or r.get("station_code"),
                 "date": r.get("date"),
@@ -550,10 +573,7 @@ def get_readings_table(
     readings = readings[offset : offset + limit]
     out = []
     for r in readings:
-        st = r.get("river_status")
-        if st is None:
-            w = r.get("wqi", 0)
-            st = "clean" if w >= 81 else ("slightly_polluted" if w >= 60 else "polluted")
+        st = status_from_wqi(float(r.get("wqi", 0) or 0))
         out.append({
             "station_name": r.get("station_name") or r.get("station_code"),
             "date": r["reading_date"],
@@ -627,13 +647,13 @@ def get_historical_alerts(limit: int = 100) -> list[dict]:
     by_station = defaultdict(list)
     for r in _store["readings"]:
         if (r.get("reading_date") or "") <= today:
-            key = r.get("station_name") or r.get("station_code", "")
+            key = _canonical_station_key(r)
             if key:
                 by_station[key].append(r)
 
     latest_records: list[dict] = []
     for _, rows in by_station.items():
-        rows = sorted(rows, key=lambda x: x.get("reading_date", ""))
+        rows = sorted(rows, key=lambda x: (x.get("reading_date") or "", x.get("id", 0)))
         if rows:
             latest_records.append(rows[-1])
 
@@ -660,7 +680,7 @@ def get_historical_alerts(limit: int = 100) -> list[dict]:
             "alert_type": "historical",
         })
 
-    alerts.sort(key=lambda a: a.get("date") or "", reverse=True)
+    alerts.sort(key=lambda a: (a.get("date") or "", a.get("station_name") or a.get("station_code") or ""), reverse=True)
     return alerts[:limit]
 
 
@@ -692,14 +712,18 @@ def get_forecast_alerts(limit: int = 100) -> list[dict]:
         date_str = p.get("date") or ""
         if not date_str or date_str <= today:
             continue
-        status = p.get("river_status")
+        try:
+            wq = float(p.get("wqi", 0) or 0)
+        except (TypeError, ValueError):
+            wq = 0.0
+        status = status_from_wqi(wq)
         if status not in ("slightly_polluted", "polluted"):
             continue
         alerts.append({
             "station_code": p.get("station_code"),
             "station_name": p.get("station_name") or p.get("station_code"),
             "date": date_str,
-            "wqi": p.get("wqi"),
+            "wqi": wq,
             "river_status": status,
             "message": _message(status),
             "alert_type": "forecast",
@@ -748,17 +772,19 @@ def get_stations() -> list[dict]:
     for r in _store["readings"]:
         if (r.get("reading_date") or "") > today:
             continue
-        key = r.get("station_name") or r.get("station_code", "")
+        key = _canonical_station_key(r)
         if key:
             by_station[key].append(r)
     out = []
     for name, rows in by_station.items():
-        rows = sorted(rows, key=lambda x: x.get("reading_date", ""))
+        rows = sorted(rows, key=lambda x: (x.get("reading_date") or "", x.get("id", 0)))
         latest = rows[-1] if rows else {}
         wqi = latest.get("wqi", 0)
-        status = latest.get("river_status")
-        if status is None:
-            status = "clean" if wqi >= 81 else ("slightly_polluted" if wqi >= 60 else "polluted")
+        try:
+            wqf = float(wqi or 0)
+        except (TypeError, ValueError):
+            wqf = 0.0
+        status = status_from_wqi(wqf)
         out.append({
             "station_code": name,
             "station_name": name,
@@ -849,6 +875,72 @@ def delete_station(station_id: int) -> bool:
 def list_stations_admin() -> list[dict]:
     """List all stations for admin (full list from _store['stations'] + derived from readings)."""
     return get_stations()
+
+
+def create_feedback_report(
+    email: str,
+    message: str,
+    user_id: Optional[int] = None,
+    name: Optional[str] = None,
+) -> dict:
+    """Persist user feedback / issue report (SQLite)."""
+    email_norm = (email or "").strip().lower()
+    if not email_norm:
+        raise ValueError("Email required")
+    msg = (message or "").strip()
+    if not msg:
+        raise ValueError("Message required")
+    name_clean = (name or "").strip() or None
+    created_at = datetime.utcnow().isoformat()
+    uid = None
+    if user_id is not None:
+        try:
+            uid = int(user_id)
+        except (TypeError, ValueError):
+            uid = None
+    with _sqlite_conn() as conn:
+        cur = conn.execute(
+            """
+            INSERT INTO feedback_reports (user_id, name, email, message, created_at)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (uid, name_clean, email_norm, msg, created_at),
+        )
+        rid = int(cur.lastrowid)
+    return {
+        "id": rid,
+        "user_id": uid,
+        "name": name_clean,
+        "email": email_norm,
+        "message": msg,
+        "created_at": created_at,
+    }
+
+
+def list_feedback_reports(limit: int = 500) -> list[dict]:
+    """All feedback rows, newest first (admin)."""
+    lim = max(1, min(int(limit), 2000))
+    with _sqlite_conn() as conn:
+        rows = conn.execute(
+            """
+            SELECT id, user_id, name, email, message, created_at
+            FROM feedback_reports
+            ORDER BY datetime(created_at) DESC
+            LIMIT ?
+            """,
+            (lim,),
+        ).fetchall()
+    out = []
+    for r in rows:
+        out.append({
+            "id": r["id"],
+            "user_id": r["user_id"],
+            "name": r["name"],
+            "email": r["email"],
+            "message": r["message"],
+            "created_at": r["created_at"],
+        })
+    return out
 
 
 def seed_default_admin() -> Optional[dict]:

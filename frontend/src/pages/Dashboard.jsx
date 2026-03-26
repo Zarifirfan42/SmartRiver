@@ -1,13 +1,12 @@
 /**
- * Dashboard — All data from dataset (Lampiran A - Sungai Kulim.xlsx).
- * Summary, Station WQI Trend (line), Forecast, Anomaly, Dataset table, Map, Export.
+ * Dashboard — River monitoring: KPIs, map, dataset table, historical WQI trend, export.
+ * Forecast charts live on the Pollution Forecast page only.
  */
 import { useState, useEffect } from 'react'
 import { Link } from 'react-router-dom'
 import { useAuth } from '../context/AuthContext'
 import { DashboardSummary } from '../dashboard'
 import TimeSeriesChart from '../components/charts/TimeSeriesChart'
-import ForecastChart from '../components/charts/ForecastChart'
 import WQIAnomalyChart from '../components/charts/WQIAnomalyChart'
 import RiverMap from '../components/map/RiverMap'
 import DatasetTable from '../components/dataset/DatasetTable'
@@ -71,7 +70,6 @@ export default function Dashboard() {
     cleanCount: 0,
     pollutedCount: 0,
     slightlyPollutedCount: 0,
-    predictedAvgWqi2025_2028: 0,
   })
   const [stations, setStations] = useState([])
   const [years, setYears] = useState([])
@@ -82,12 +80,6 @@ export default function Dashboard() {
   const [trendStation, setTrendStation] = useState('')
   const [trendYear, setTrendYear] = useState('')
   const [timeSeries, setTimeSeries] = useState([])
-
-  // Forecast
-  const [forecastStation, setForecastStation] = useState('')
-  const [forecastRange, setForecastRange] = useState(14)
-  const [historicalSeries, setHistoricalSeries] = useState([])
-  const [forecast, setForecast] = useState([])
 
   // Anomaly
   const [anomalyStation, setAnomalyStation] = useState('')
@@ -119,13 +111,11 @@ export default function Dashboard() {
           cleanCount: s.cleanCount ?? 0,
           pollutedCount: s.pollutedCount ?? 0,
           slightlyPollutedCount: s.slightlyPollutedCount ?? 0,
-          predictedAvgWqi2025_2028: s.predictedAvgWqi2025_2028 ?? 0,
         })
         const st = Array.isArray(stationList) ? stationList : []
         setStations(st)
         setYears(Array.isArray(yearList) ? yearList : [])
         if (st.length > 0 && !trendStation) setTrendStation(st[0].station_name || st[0].station_code)
-        if (st.length > 0 && !forecastStation) setForecastStation(st[0].station_name || st[0].station_code)
         if (isAdmin && st.length > 0 && !anomalyStation) setAnomalyStation(st[0].station_name || st[0].station_code)
       } catch (err) {
         if (!cancelled) setError(err.message || 'Failed to load dashboard')
@@ -170,22 +160,6 @@ export default function Dashboard() {
   }, [trendStation, trendYear, stations.length])
 
   useEffect(() => {
-    let cancelled = false
-    const station = forecastStation || (stations[0]?.station_name || stations[0]?.station_code)
-    if (!station) return
-    Promise.all([
-      dashboardApi.getTimeSeries({ station_name: station, limit: 60 }),
-      dashboardApi.getForecast({ station_code: station, limit: forecastRange }),
-    ]).then(([tsRes, fcRes]) => {
-      if (!cancelled) {
-        setHistoricalSeries(Array.isArray(tsRes?.series) ? tsRes.series : [])
-        setForecast(Array.isArray(fcRes?.forecast) ? fcRes.forecast : [])
-      }
-    }).catch(() => { if (!cancelled) { setHistoricalSeries([]); setForecast([]) } })
-    return () => { cancelled = true }
-  }, [forecastStation, forecastRange, stations.length])
-
-  useEffect(() => {
     if (!isAdmin) return
     let cancelled = false
     const station = anomalyStation || (stations[0]?.station_name || stations[0]?.station_code)
@@ -204,9 +178,9 @@ export default function Dashboard() {
 
   useEffect(() => {
     let cancelled = false
-    dashboardApi.getAlertsByType({ limit: 200 }).then(({ historical, forecast }) => {
+    dashboardApi.getAlertsByType({ limit: 200 }).then(({ historical }) => {
       if (cancelled) return
-      const combined = [...(Array.isArray(historical) ? historical : []), ...(Array.isArray(forecast) ? forecast : [])]
+      const combined = Array.isArray(historical) ? historical : []
       const polluted = combined.filter((a) => (a.river_status || '').toLowerCase() === 'polluted')
       const slightly = combined.filter((a) => (a.river_status || '').toLowerCase() === 'slightly_polluted')
       const sortDesc = (arr) => arr.sort((a, b) => (b.date || '').localeCompare(a.date || ''))
@@ -221,12 +195,12 @@ export default function Dashboard() {
     <div className="space-y-6">
       <h1 className="text-2xl font-semibold text-slate-900">Dashboard</h1>
       <div className="text-sm text-surface-500">
-        <div>Data Source: Historical, Simulated Live, Forecast</div>
+        <div>Data source: historical and simulated live monitoring</div>
         <div>Last Updated: {lastUpdated}</div>
       </div>
       {error && (
         <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-2 text-sm text-amber-800">
-          {error}. Ensure the backend is running; dataset loads from datasets/Lampiran A - Sungai Kulim.xlsx on startup.
+          {error}. Ensure the backend is running; the River Monitoring Dataset loads automatically on startup when placed in the datasets folder.
         </div>
       )}
       {loading && <p className="text-surface-500">Loading…</p>}
@@ -237,7 +211,6 @@ export default function Dashboard() {
         cleanCount={summary.cleanCount}
         pollutedCount={summary.pollutedCount}
         slightlyPollutedCount={summary.slightlyPollutedCount}
-        predictedAvgWqi2025_2028={summary.predictedAvgWqi2025_2028}
       />
 
       {/* WQI classification panel */}
@@ -334,8 +307,14 @@ export default function Dashboard() {
 
       {/* WQI Trend Analysis — Line chart, filter by station and year */}
       <div className="mt-6 rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
-        <h2 className="font-display font-semibold text-surface-800 mb-4">WQI Trend Analysis</h2>
-        <p className="text-sm text-surface-500 mb-4">Shows how river water quality (WQI) changes over time for the selected station and year.</p>
+        <h2 className="font-display font-semibold text-surface-800 mb-4">WQI trend analysis</h2>
+        <p className="text-sm text-surface-500 mb-4">
+          Historical and simulated live WQI over time for the selected station and year.{' '}
+          <Link to="/forecast" className="font-medium text-cyan-700 hover:text-cyan-900 underline">
+            Open Pollution Forecast
+          </Link>
+          {' '}for predicted WQI.
+        </p>
         <div className="flex flex-wrap gap-4 mb-4">
           <div>
             <label className="label">Station</label>
@@ -370,49 +349,6 @@ export default function Dashboard() {
           <TimeSeriesChart data={timeSeries} height={320} />
         ) : (
           <div className="h-[320px] flex items-center justify-center text-surface-500">No data for selected filters.</div>
-        )}
-      </div>
-
-      {/* Forecast Prediction — Station + range; Historical (solid) + Forecast (dashed) */}
-      <div className="mt-6 rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
-        <h2 className="font-display font-semibold text-surface-800 mb-4">Forecast Prediction</h2>
-        <p className="text-sm text-surface-500 mb-4">Compares historical WQI (solid line) with predicted WQI (dashed line) for the selected station and forecast range.</p>
-        <div className="flex flex-wrap gap-4 mb-4">
-          <div>
-            <label className="label">Station name</label>
-            <select
-              value={forecastStation}
-              onChange={(e) => setForecastStation(e.target.value)}
-              className="input-field w-auto min-w-[200px]"
-            >
-              {stations.map((s) => (
-                <option key={s.station_code} value={s.station_name || s.station_code}>
-                  {s.station_name || s.station_code}
-                </option>
-              ))}
-            </select>
-          </div>
-          <div>
-            <label className="label">Forecast range (days)</label>
-            <select
-              value={forecastRange}
-              onChange={(e) => setForecastRange(Number(e.target.value))}
-              className="input-field w-auto min-w-[120px]"
-            >
-              <option value={7}>7</option>
-              <option value={14}>14</option>
-              <option value={30}>30</option>
-            </select>
-          </div>
-        </div>
-        {(historicalSeries.length > 0 || forecast.length > 0) ? (
-          <ForecastChart
-            historical={historicalSeries.map((d) => ({ date: d.date, wqi: d.wqi ?? d.value }))}
-            forecast={forecast.map((f) => ({ date: f?.date || '', wqi: typeof f === 'number' ? f : (f?.wqi ?? f?.value ?? null) }))}
-            height={320}
-          />
-        ) : (
-          <div className="h-[320px] flex items-center justify-center text-surface-500">No forecast data. Run model to generate predictions.</div>
         )}
       </div>
 

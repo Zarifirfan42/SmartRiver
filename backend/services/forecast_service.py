@@ -14,15 +14,6 @@ ROOT = Path(__file__).resolve().parents[2]
 # Requirement: remove 2025 from forecast (2025 is historical).
 FORECAST_YEARS = [2026, 2027, 2028]
 
-# Predicted river status from WQI (same rule as elsewhere).
-def _predicted_status(wqi: float) -> str:
-    if wqi >= 81:
-        return "clean"
-    if wqi >= 60:
-        return "slightly_polluted"
-    return "polluted"
-
-
 def run_forecast() -> list[dict]:
     """
     Train a time-series forecast model on historical WQI (readings with year <= 2025).
@@ -33,7 +24,7 @@ def run_forecast() -> list[dict]:
     if str(ROOT) not in sys.path:
         sys.path.insert(0, str(ROOT))
 
-    from backend.db.repository import _store, save_prediction_log, save_alert
+    from backend.db.repository import _store, save_prediction_log, save_alert, status_from_wqi
 
     readings = list(_store.get("readings", []))
     if not readings:
@@ -111,7 +102,7 @@ def run_forecast() -> list[dict]:
                 }])
                 pred_wqi = float(model.predict(X_pred)[0])
                 pred_wqi = max(0.0, min(100.0, round(pred_wqi, 1)))
-                status = _predicted_status(pred_wqi)
+                status = status_from_wqi(pred_wqi)
                 forecast.append({
                     "date": date_str,
                     "station_code": station,

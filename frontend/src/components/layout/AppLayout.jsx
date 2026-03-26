@@ -1,5 +1,6 @@
 import { NavLink, Outlet, useNavigate } from 'react-router-dom'
 import { useAuth } from '../../context/AuthContext'
+import ReportIssueButton from '../feedback/ReportIssueButton'
 
 const navPublic = [
   { to: '/dashboard', label: 'Dashboard', icon: '📊' },
@@ -58,6 +59,7 @@ export default function AppLayout() {
         <header className="h-16 flex-shrink-0 flex items-center justify-between border-b border-surface-200 bg-white px-6 shadow-sm">
           <div className="text-sm text-surface-500">Predictive River Pollution Monitoring</div>
           <div className="flex items-center gap-4">
+            <ReportIssueButton />
             <span className="text-sm text-surface-600">{user?.full_name || user?.email}</span>
             <button
               type="button"

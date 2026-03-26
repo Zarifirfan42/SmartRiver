@@ -1,5 +1,5 @@
 """
-Dashboard controller — All data from dataset (Lampiran A - Sungai Kulim.xlsx).
+Dashboard controller — metrics and series from the active river monitoring readings (River Monitoring Dataset on startup when present).
 Summary, time-series, forecast, stations, anomalies, dataset table. No hardcoded values.
 """
 from fastapi import APIRouter, Query
@@ -25,7 +25,7 @@ def dashboard_summary():
 
 @router.get("/time-series")
 def dashboard_time_series(
-    station_code: str = Query(None, description="Station name (e.g. Sungai Pinang)"),
+    station_code: str = Query(None, description="Station code or name from your monitoring data"),
     station_name: str = Query(None, description="Alias for station filter"),
     year: int = Query(None, description="Filter by year (2022, 2023, 2024)"),
     limit: int = Query(500, ge=1, le=2000),
