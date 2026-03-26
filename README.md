@@ -1,77 +1,40 @@
 # SmartRiver
-<<<<<<< HEAD
-AI-based River Water Quality Monitoring System
-=======
 
-**Predictive River Pollution Monitoring System** — Full-stack AI project for monitoring river water quality using machine learning and a web dashboard. Data source: DOE Malaysia.
+**SmartRiver** is an AI-based River Water Quality Monitoring System built with **React + TailwindCSS** (frontend) and **FastAPI + Python** (backend). It monitors river water quality using **Water Quality Index (WQI)** and supports:
 
-- **Backend:** FastAPI + Python  
-- **Frontend:** React + TailwindCSS  
-- **ML:** Scikit-learn (Random Forest, Isolation Forest), TensorFlow (LSTM)
+- **Classification** (Random Forest)
+- **Forecasting** (LSTM)
+- **Anomaly detection** (Isolation Forest)
+
+Data is based on **DOE Malaysia** river water quality datasets.
 
 ---
 
-## Project structure and purpose
+## Tech stack
 
-```
-SmartRiver/
-│
-├── frontend/                    # React + TailwindCSS web app
-│   ├── dashboard/               # Dashboard layout and summary widgets (in src/dashboard)
-│   ├── components/              # Reusable UI components
-│   ├── pages/                   # Page-level screens (in src/pages)
-│   └── charts/                  # Chart components: WQI gauge, time-series (in src/charts)
-│
-├── backend/                     # FastAPI + Python API
-│   ├── api/                     # Route registration and API wiring
-│   ├── auth/                    # JWT, login, get_current_user, require_admin
-│   ├── controllers/             # HTTP handlers (FastAPI routers)
-│   └── services/                # Business logic (dataset, ML orchestration)
-│
-├── modules/                     # Domain modules (shared logic)
-│   ├── data_management/        # Auth, RBAC, dataset CRUD, prediction logs
-│   ├── data_preprocessing/     # Cleaning, imputation, WQI, feature engineering
-│   ├── ml_engine/               # RF classification, LSTM forecast, anomaly detection
-│   └── visualization_alert/    # Dashboard data, alerts, report export
-│
-├── ml_models/                   # Persisted model artifacts
-│   ├── random_forest/          # Classification model (joblib)
-│   ├── lstm/                    # Forecasting model (Keras)
-│   └── anomaly_detection/       # Isolation Forest (joblib)
-│
-├── database/
-│   ├── schema.sql               # PostgreSQL DDL
-│   └── migrations/              # Migration scripts
-│
-├── datasets/                    # Uploaded CSV files (runtime)
-│
-├── docs/                        # SRS, architecture, API spec, ML workflow
-│
-├── requirements.txt             # Python dependencies
-├── README.md                    # This file
-└── .gitignore
-```
+- **Frontend**: React, TailwindCSS, Vite
+- **Backend**: FastAPI, Python
+- **ML**: scikit-learn (Random Forest, Isolation Forest), TensorFlow/Keras (LSTM)
+- **Storage**:
+  - Runtime datasets: `datasets/`
+  - Saved models: `ml_models/`
+  - Auth + feedback persistence: SQLite (default)
+  - Optional full schema: PostgreSQL (`database/schema.sql`)
 
-### Folder purposes
+---
 
-| Folder | Purpose |
-|--------|---------|
-| **frontend/dashboard** | Dashboard layout and summary cards; entry for dashboard-specific UI. |
-| **frontend/components** | Shared UI (buttons, cards, layout). |
-| **frontend/pages** | Full-page screens (login, dashboard, river health, forecast, alerts, export). |
-| **frontend/charts** | Reusable charts (WQI gauge, time-series, forecast). |
-| **backend/api** | Central API router and route registration. |
-| **backend/auth** | JWT create/decode, `get_current_user`, `require_admin` for protected routes. |
-| **backend/controllers** | FastAPI routers; thin layer that calls services. |
-| **backend/services** | Business logic (e.g. dataset upload, ML orchestration). |
-| **modules/data_management** | User/dataset/prediction-log domain logic. |
-| **modules/data_preprocessing** | Data pipeline: clean, impute, WQI, features. |
-| **modules/ml_engine** | Train/predict: RF, LSTM, Isolation Forest. |
-| **modules/visualization_alert** | Dashboard aggregates, alerts, reports. |
-| **ml_models/** | Saved models (RF, LSTM, anomaly) produced by training. |
-| **database/** | Schema and migrations for PostgreSQL. |
-| **datasets/** | Uploaded CSV storage. |
-| **docs/** | Documentation (SRS, architecture, API, ML). |
+## Folder structure
+
+| Path | Purpose |
+|------|---------|
+| `frontend/` | React + TailwindCSS web app |
+| `backend/` | FastAPI app, controllers, services, auth |
+| `modules/` | Shared domain logic (data management, preprocessing, ML, visualization/alerts) |
+| `ml_engine/` | ML pipeline/services (training + inference helpers) |
+| `ml_models/` | Saved ML model artifacts (joblib / keras) |
+| `datasets/` | Uploaded datasets + sample dataset (`datasets/uploads/` for uploads) |
+| `database/` | SQL schemas (PostgreSQL reference) |
+| `docs/` | Documentation |
 
 ---
 
@@ -79,11 +42,10 @@ SmartRiver/
 
 ### Prerequisites
 
-- **Node.js** 18+ and **npm** (frontend)  
-- **Python** 3.10+ (backend + ML)  
-- **PostgreSQL** (optional, for full backend)
+- **Node.js** 18+ (frontend)
+- **Python** 3.10+ (backend + ML)
 
-### 1. Frontend
+### 1) Frontend
 
 ```bash
 cd frontend
@@ -91,14 +53,13 @@ npm install
 npm run dev
 ```
 
-Open **http://localhost:3000**.
+Open `http://localhost:3000`.
 
-### 2. Backend
+### 2) Backend
 
-From **project root** (so `backend` and `modules` are on the path):
+Run from project root so imports work.
 
-```bash
-# Windows PowerShell
+```powershell
 cd SmartRiver
 $env:PYTHONPATH = (Get-Location).Path
 cd backend
@@ -106,50 +67,27 @@ pip install -r ../requirements.txt
 uvicorn app.main:app --reload --port 8000
 ```
 
-API: **http://localhost:8000** — Docs: **http://localhost:8000/docs**
+API base: `http://localhost:8000/api/v1`  
+Swagger: `http://localhost:8000/docs`
 
-### 3. Database (optional)
+### 3) Dataset
 
-```bash
-createdb smartriver
-psql -U postgres -d smartriver -f database/schema.sql
-```
-
-Set `DATABASE_URL` in `backend/.env`.
+- Put your DOE Malaysia dataset (CSV/Excel) inside `datasets/`
+- Uploads (admin UI) are stored under `datasets/uploads/`
 
 ---
 
-## Push to GitHub
+## Training models
 
-You can’t push to your GitHub from this environment; do it from your machine:
+The training script is at `ml_engine/train.py` and saves:
 
-1. **Create a new repo** on [GitHub](https://github.com/Zarifirfan42) (e.g. `SmartRiver`). Don’t add a README or .gitignore in the UI if the project already has them.
-
-2. **From your project folder** (e.g. `SmartRiver`):
-
-```bash
-git init
-git add .
-git commit -m "Initial commit: SmartRiver full-stack structure"
-git branch -M main
-git remote add origin https://github.com/Zarifirfan42/SmartRiver.git
-git push -u origin main
-```
-
-3. If the repo already exists and has content:
-
-```bash
-git remote add origin https://github.com/Zarifirfan42/SmartRiver.git
-git pull origin main --allow-unrelated-histories
-git push -u origin main
-```
-
-Use **GitHub CLI** (`gh repo create`) or **GitHub Desktop** if you prefer.
+- Random Forest → `ml_models/random_forest/model.joblib`
+- LSTM → `ml_models/lstm/model.keras`
+- Isolation Forest → `ml_models/anomaly_detection/model.joblib`
 
 ---
 
-## License and author
+## Environment variables
 
-FYP project — Intelligent Computing / Data Science.  
-Author: [Zarif Irfan Bin Khairussli](https://github.com/Zarifirfan42).
->>>>>>> 5b4bd9b (Initial SmartRiver project commit)
+Copy `.env.example` to `.env` and fill in values as needed.
+

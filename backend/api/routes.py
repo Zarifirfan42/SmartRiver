@@ -48,4 +48,9 @@ def register_routes(app):
         api_router.include_router(feedback_router, prefix="/feedback", tags=["Feedback"])
     except ImportError:
         pass
+    try:
+        from backend.controllers.compat_controller import router as compat_router
+        api_router.include_router(compat_router, tags=["Compat"])
+    except ImportError:
+        pass
     app.include_router(api_router, prefix="/api/v1")

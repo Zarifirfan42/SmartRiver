@@ -40,7 +40,7 @@ async def upload_dataset(
     row = save_dataset(
         name=file.filename,
         file_path=file_path,
-        file_size_bytes=len(content),
+        file_size=len(content),
         row_count=0,
         uploaded_by=current_user["id"],
     )
