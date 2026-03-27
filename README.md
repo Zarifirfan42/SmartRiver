@@ -85,6 +85,37 @@ The training script is at `ml_engine/train.py` and saves:
 - LSTM → `ml_models/lstm/model.keras`
 - Isolation Forest → `ml_models/anomaly_detection/model.joblib`
 
+### Verified artifacts (for reviewer evidence)
+
+The project includes trained artifacts generated from:
+
+```powershell
+.venv\Scripts\python.exe ml_engine/train.py --csv sample_water_quality --lstm-epochs 3 --lstm-horizon 7
+```
+
+Saved files:
+
+- `ml_models/random_forest/model.joblib`
+- `ml_models/lstm/model.keras`
+- `ml_models/lstm/scaler.joblib`
+- `ml_models/anomaly_detection/model.joblib`
+
+Latest quick metrics from the run:
+
+- Random Forest accuracy: `0.995`
+- LSTM RMSE: `0.1605`
+- LSTM MAE: `0.1188`
+
+---
+
+## Demo screenshot
+
+Dashboard/module demonstration screenshot:
+
+![SmartRiver Demo](docs/images/smartriver-demo.png)
+
+If the image does not render on GitHub, add your latest local screenshot at `docs/images/smartriver-demo.png`.
+
 ---
 
 ## Environment variables
