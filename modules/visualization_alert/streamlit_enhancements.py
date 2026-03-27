@@ -58,6 +58,7 @@ def render_alert_panel(st, alerts: list[dict], max_items: int = 20):
         return
     for a in alerts[:max_items]:
         alert_type = a.get("alert_type", "Alert")
+        severity = str(a.get("severity", "")).lower()
         station = a.get("station_name", "Unknown")
         date = a.get("date", "-")
         message = a.get("message", "")
@@ -65,5 +66,38 @@ def render_alert_panel(st, alerts: list[dict], max_items: int = 20):
         line = f"[{alert_type}] {station} | {date} | {message}"
         if wqi is not None:
             line += f" (WQI: {float(wqi):.2f})"
-        st.warning(line)
+        if severity == "high" or (wqi is not None and float(wqi) < 60):
+            st.error(line)
+        else:
+            st.warning(line)
+
+
+def render_evaluation_panel(st, evaluation: dict):
+    """
+    Display RMSE, MAE, and optional training loss in Streamlit.
+    """
+    st.subheader("LSTM Model Evaluation")
+    rmse = evaluation.get("rmse")
+    mae = evaluation.get("mae")
+    c1, c2 = st.columns(2)
+    c1.metric("RMSE", "-" if rmse is None else f"{float(rmse):.3f}")
+    c2.metric("MAE", "-" if mae is None else f"{float(mae):.3f}")
+
+    train_loss = evaluation.get("train_loss", []) or []
+    val_loss = evaluation.get("val_loss", []) or []
+    if train_loss:
+        st.caption("Training loss trend (lower is better)")
+        loss_df = pd.DataFrame({"epoch": list(range(1, len(train_loss) + 1)), "train_loss": train_loss})
+        if val_loss:
+            loss_df["val_loss"] = val_loss[: len(loss_df)]
+        st.line_chart(loss_df.set_index("epoch"))
+
+
+def render_forecast_explanation(st, explanation: dict):
+    """
+    Show easy-to-understand forecast interpretation for non-technical users.
+    """
+    st.subheader("Forecast Explanation")
+    st.info(f"Trend: {explanation.get('trend', 'N/A')}")
+    st.write(explanation.get("explanation", "No explanation available."))
 

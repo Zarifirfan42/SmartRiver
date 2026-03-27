@@ -106,7 +106,7 @@ def train(
     y_train, y_test = y[:-n_test], y[-n_test:]
 
     model = build_model(seq_len, horizon)
-    model.fit(
+    history = model.fit(
         X_train, y_train,
         validation_data=(X_test, y_test),
         epochs=epochs,
@@ -123,6 +123,11 @@ def train(
 
     metrics = {"rmse": rmse, "mae": mae}
 
+    # Keep training loss for transparent model reporting in UI.
+    history_dict = history.history if hasattr(history, "history") else {}
+    train_loss = list(history_dict.get("loss", []))
+    val_loss = list(history_dict.get("val_loss", []))
+
     return {
         "model": model,
         "scaler": scaler,
@@ -130,6 +135,8 @@ def train(
         "horizon": horizon,
         "metrics": metrics,
         "feature_columns": ["WQI"],
+        "train_loss": train_loss,
+        "val_loss": val_loss,
     }
 
 

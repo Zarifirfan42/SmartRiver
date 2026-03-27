@@ -8,7 +8,11 @@ from __future__ import annotations
 
 import pandas as pd
 
-from ml_engine.services.lstm_forecast_module import train_lstm_forecaster, predict_future_wqi
+from ml_engine.services.lstm_forecast_module import (
+    train_lstm,
+    predict_wqi,
+    explain_forecast_trend,
+)
 from ml_engine.services.isolation_forest_module import detect_anomalies
 from modules.visualization_alert.enhanced_alerts import (
     build_threshold_alerts,
@@ -29,14 +33,12 @@ def run_enhancement_flow(
     2) Isolation Forest anomaly detection
     3) Combined alerts
     """
-    trained = train_lstm_forecaster(
+    trained = train_lstm(
         df=df,
         station_code=station_code,
         horizon_days=horizon_days,
-        use_augmentation_if_small=True,
-        min_rows_for_lstm=120,
     )
-    forecast_df = predict_future_wqi(
+    forecast_df = predict_wqi(
         trained=trained,
         df=df,
         horizon_days=horizon_days,
@@ -59,12 +61,16 @@ def run_enhancement_flow(
         station_name=station_code or "All Stations",
     )
     alerts = combine_alerts(threshold_alerts, anomaly_alerts)
+    explanation = explain_forecast_trend(forecast_df)
 
     return {
         "forecast_df": forecast_df,
         "anomaly_df": anomaly_df,
         "alerts": alerts,
+        "forecast_explanation": explanation,
         "metrics": trained.get("metrics", {}),
+        "train_loss": trained.get("train_loss", []),
+        "val_loss": trained.get("val_loss", []),
         "training_error": trained.get("error"),
     }
 

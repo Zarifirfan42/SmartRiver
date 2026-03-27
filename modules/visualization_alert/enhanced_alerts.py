@@ -27,6 +27,7 @@ def build_threshold_alerts(
             continue
         out.append({
             "alert_type": "ForecastThreshold",
+            "severity": "high",
             "station_name": row.get("station_name", station_name),
             "date": str(row.get("date", ""))[:10],
             "wqi": round(wqi, 2),
@@ -50,6 +51,7 @@ def build_anomaly_alerts(
             continue
         out.append({
             "alert_type": "Anomaly",
+            "severity": "medium",
             "station_name": row.get("station_name", station_name),
             "date": str(row.get("date", row.get("reading_date", "")))[:10],
             "wqi": float(row.get("WQI", row.get("wqi", 0))),
