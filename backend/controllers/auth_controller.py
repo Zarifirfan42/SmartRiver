@@ -3,6 +3,7 @@ Auth controller — Login, register, and current user (JWT).
 """
 from fastapi import APIRouter, HTTPException, status, Depends
 from pydantic import BaseModel, EmailStr
+import sqlite3
 
 from backend.auth.auth_service import (
     hash_password,
@@ -48,18 +49,35 @@ def login(body: LoginRequest):
     if not email or not body.password:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Email and password required")
 
-    user = get_user_by_email(email)
+    try:
+        user = get_user_by_email(email)
+    except sqlite3.Error:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Authentication database is temporarily unavailable. Please try again.",
+        )
     if not user:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid email or password")
     if not user.get("is_active", True):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Account disabled")
 
-    if not verify_password(body.password, user["password_hash"]):
+    try:
+        ok = verify_password(body.password, user["password_hash"])
+    except Exception:
+        # Prevent internal hashing errors from leaking as 500 to users.
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid email or password")
+    if not ok:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid email or password")
 
-    token = create_access_token(
-        data={"sub": str(user["id"]), "email": user.get("email"), "role": user.get("role", "public")}
-    )
+    try:
+        token = create_access_token(
+            data={"sub": str(user["id"]), "email": user.get("email"), "role": user.get("role", "public")}
+        )
+    except Exception:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Authentication service is temporarily unavailable. Please try again.",
+        )
     return {
         "access_token": token,
         "token_type": "bearer",
@@ -94,10 +112,21 @@ def register(body: RegisterRequest):
         if "already registered" in str(e).lower():
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Email already registered")
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+    except sqlite3.Error:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Authentication database is temporarily unavailable. Please try again.",
+        )
 
-    token = create_access_token(
-        data={"sub": str(user["id"]), "email": user.get("email"), "role": user.get("role", "public")}
-    )
+    try:
+        token = create_access_token(
+            data={"sub": str(user["id"]), "email": user.get("email"), "role": user.get("role", "public")}
+        )
+    except Exception:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Authentication service is temporarily unavailable. Please try again.",
+        )
     return {
         "access_token": token,
         "token_type": "bearer",

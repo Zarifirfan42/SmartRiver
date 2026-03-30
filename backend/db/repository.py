@@ -59,7 +59,17 @@ def _sqlite_conn() -> sqlite3.Connection:
     SQLite connection for persistent auth/user data.
     We keep analytics/readings in-memory for now, but users must persist across restarts.
     """
-    conn = sqlite3.connect(_SQLITE_PATH)
+    # Ensure directory exists and use a timeout to reduce "database is locked" errors
+    # when frontend and backend perform near-simultaneous auth writes.
+    sqlite_path = Path(_SQLITE_PATH)
+    sqlite_path.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(str(sqlite_path), timeout=15, check_same_thread=False)
+    try:
+        conn.execute("PRAGMA journal_mode=WAL;")
+        conn.execute("PRAGMA synchronous=NORMAL;")
+    except Exception:
+        # Keep auth functional even if PRAGMA is not supported in current environment.
+        pass
     conn.row_factory = sqlite3.Row
     return conn
 
