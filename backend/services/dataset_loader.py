@@ -419,11 +419,22 @@ def run_startup_data_load():
     except Exception:
         pass
 
-    # Heavy startup tasks (anomaly/forecast/backfill/live) are optional.
-    # They can make app startup slow and block API availability.
+    # Forecast for Pollution Forecast UI: must run on normal startup.
+    # prediction_logs["forecast"] powers GET /dashboard/forecast; without this the page is empty.
+    # (Still much lighter than anomaly + backfill + live simulation together.)
+    try:
+        from backend.services.forecast_service import run_forecast
+
+        forecast_list = run_forecast()
+        n = len(forecast_list) if isinstance(forecast_list, list) else 0
+        print(f"Forecast points generated for dashboard: {n}")
+    except Exception as e:
+        print("Forecast generation skipped:", e)
+
+    # Heavy startup tasks (anomaly/backfill/live simulation) stay optional — they can block or slow startup.
     run_heavy = os.environ.get("SMARTRIVER_RUN_HEAVY_STARTUP", "false").strip().lower() == "true"
     if not run_heavy:
-        print("Heavy startup tasks skipped (set SMARTRIVER_RUN_HEAVY_STARTUP=true to enable).")
+        print("Heavy startup tasks skipped (set SMARTRIVER_RUN_HEAVY_STARTUP=true for anomaly, backfill, live sim).")
         return
 
     try:
@@ -440,12 +451,7 @@ def run_startup_data_load():
     except Exception:
         pass
 
-    # Generate forecast predictions for 2025-2028 (per station). Do not use dataset 2025-2028 as real data.
-    try:
-        from backend.services.forecast_service import run_forecast
-        run_forecast()
-    except Exception:
-        pass
+    # (run_forecast already executed above)
 
     # Backfill missing daily readings per station up to today (simulated_backfill).
     try:
