@@ -73,7 +73,7 @@ async def run_preprocessing(
         missing_value_handling,
         add_wqi,
     )
-    from backend.db.repository import save_readings
+    from backend.db.repository import append_readings_with_dedup
 
     try:
         datasets_dir = input_path.parent
@@ -115,7 +115,7 @@ async def run_preprocessing(
         })
     if not readings:
         raise HTTPException(status_code=422, detail="Preprocessing produced no rows — check CSV columns (date, station).")
-    save_readings(int(dataset_id), readings)
+    append_readings_with_dedup(int(dataset_id), readings)
 
     # Automatically rerun anomaly detection on the same dataset
     try:

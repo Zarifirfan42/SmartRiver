@@ -432,6 +432,51 @@ def save_readings(dataset_id: int, readings: list[dict]) -> None:
         _store["readings"].append(rec)
 
 
+def append_readings_with_dedup(dataset_id: int, readings: list[dict]) -> None:
+    """
+    Append WQI readings to the in-memory store, de-duplicating by (station, date).
+
+    - Existing readings are kept unless a new row shares the same (station_code/station_name, date),
+      in which case the new row replaces the old one.
+    - Does NOT touch forecast data; dashboard still filters by reading_date <= today.
+    """
+    combined = list(_store["readings"])
+    # Build records for new readings using the same shape as save_readings / append_reading.
+    for r in readings:
+        scode = str(r.get("station_code", "S01")).strip()
+        sname = (r.get("station_name") or r.get("Station Name") or "").strip() or None
+        rec = {
+            "id": _next_id("readings"),
+            "dataset_id": dataset_id,
+            "station_code": scode,
+            "station_name": sname,
+            "reading_date": r.get("date", r.get("reading_date", "")),
+            "wqi": float(r.get("wqi", 0)),
+            "created_at": datetime.utcnow().isoformat(),
+        }
+        rec["river_name"] = (r.get("river_name") or "").strip() or river_name_for_station(scode, sname)
+        if r.get("river_status") is not None:
+            rec["river_status"] = str(r.get("river_status")).strip() or None
+        if r.get("source") is not None:
+            rec["source"] = str(r.get("source")).strip()
+        rec["data_type"] = str(r.get("data_type") or "historical").strip()
+        combined.append(rec)
+
+    # De-duplicate by (station key, reading_date), keeping the last occurrence.
+    seen = set()
+    deduped_rev = []
+    for rec in reversed(combined):
+        key = _canonical_station_key(rec)
+        d = rec.get("reading_date", "")
+        k = (key, d)
+        if k in seen:
+            continue
+        seen.add(k)
+        deduped_rev.append(rec)
+
+    _store["readings"] = list(reversed(deduped_rev))
+
+
 def append_reading(
     dataset_id: int,
     station_code: str,
