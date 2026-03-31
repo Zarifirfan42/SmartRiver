@@ -117,12 +117,36 @@ COLUMN_ALIASES = {
 
 
 def normalize_column_names(df: pd.DataFrame) -> pd.DataFrame:
-    """Map common column names to standard DO, BOD, COD, AN, TSS, pH."""
+    """
+    Map common column names to standard DO, BOD, COD, AN, TSS, pH.
+    Handles DOE exports with newlines inside headers (e.g. 'BOD\\nmg/l') and skips index columns.
+    """
     out = df.copy()
     for col in list(out.columns):
-        c = str(col).strip().lower().replace(" ", "_")
+        raw = str(col).strip()
+        low_raw = raw.lower()
+        # Skip sub-index / index columns from DOE spreadsheets (not raw measurements)
+        if "index" in low_raw:
+            continue
+        c = low_raw.replace(" ", "_").replace("\n", "").replace("\r", "").replace("/", "_").replace(".", "_")
         if c in COLUMN_ALIASES:
             out.rename(columns={col: COLUMN_ALIASES[c]}, inplace=True)
+            continue
+        # DOE-style headers: bodmg_l, codmg_l, ssmg_l, nh3_nmg_l
+        if "nh3" in c:
+            out.rename(columns={col: "AN"}, inplace=True)
+        elif "bod" in c and "mg" in c:
+            out.rename(columns={col: "BOD"}, inplace=True)
+        elif "cod" in c and "mg" in c:
+            out.rename(columns={col: "COD"}, inplace=True)
+        elif ("ss" in c and "mg" in c) or c.replace("_", "") == "ssmg/l":
+            out.rename(columns={col: "TSS"}, inplace=True)
+        elif c == "ph" or (c.startswith("ph") and "index" not in c):
+            out.rename(columns={col: "pH"}, inplace=True)
+        elif c in ("do", "do_mg_l") or ("do" in c and "mg" in c):
+            out.rename(columns={col: "DO"}, inplace=True)
+    if out.columns.duplicated().any():
+        out = out.loc[:, ~out.columns.duplicated()].copy()
     return out
 
 
@@ -168,7 +192,12 @@ def wqi_to_status(wqi: float) -> str:
 def add_wqi_and_status(df: pd.DataFrame, wqi_column: str = "WQI") -> pd.DataFrame:
     """Add WQI and river_status columns. Modifies copy of df."""
     out = df.copy()
+    computed = compute_wqi(out)
     if wqi_column not in out.columns:
-        out[wqi_column] = compute_wqi(out)
+        out[wqi_column] = computed
+    else:
+        # Merged uploads may have WQI only for some rows (e.g. DOE file) and NaN for others (parameter-only rows).
+        existing = pd.to_numeric(out[wqi_column], errors="coerce")
+        out[wqi_column] = existing.where(existing.notna(), computed)
     out["river_status"] = out[wqi_column].map(wqi_to_status)
     return out

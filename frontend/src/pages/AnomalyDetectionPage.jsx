@@ -2,28 +2,31 @@
  * Anomaly Detection — Per station. Select station name; display anomaly chart + table.
  * Table: Station, Date, WQI, Reason (Abnormal spike). All data from dataset.
  */
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import WQIAnomalyChart from '../components/charts/WQIAnomalyChart'
 import * as dashboardApi from '../api/dashboard'
 import * as datasetsApi from '../api/datasets'
 
 export default function AnomalyDetectionPage() {
   const [stations, setStations] = useState([])
-  const [station, setStation] = useState('')
+  const [river, setRiver] = useState('')
   const [timeSeries, setTimeSeries] = useState([])
   const [anomalies, setAnomalies] = useState([])
   const [loading, setLoading] = useState(true)
   const [running, setRunning] = useState(false)
   const [error, setError] = useState(null)
 
-  const fetchData = async () => {
-    const s = station || (stations[0]?.station_name || stations[0]?.station_code)
-    if (!s) return
+  const fetchData = useCallback(async () => {
+    if (stations.length === 0) {
+      setTimeSeries([])
+      setAnomalies([])
+      return
+    }
     setError(null)
     try {
       const [series, list] = await Promise.all([
-        dashboardApi.getTimeSeries({ station_name: s, limit: 500 }),
-        dashboardApi.getAnomalies({ station_code: s, limit: 500 }),
+        dashboardApi.getTimeSeries({ river_name: river || undefined, limit: 500 }),
+        dashboardApi.getAnomalies({ river_name: river || undefined, limit: 500 }),
       ])
       setTimeSeries(Array.isArray(series?.series) ? series.series : (Array.isArray(series) ? series : []))
       setAnomalies(Array.isArray(list) ? list : [])
@@ -31,10 +34,8 @@ export default function AnomalyDetectionPage() {
       setError(e.message || 'Failed to load data')
       setTimeSeries([])
       setAnomalies([])
-    } finally {
-      setLoading(false)
     }
-  }
+  }, [river, stations.length])
 
   useEffect(() => {
     let cancelled = false
@@ -43,7 +44,8 @@ export default function AnomalyDetectionPage() {
         const list = await dashboardApi.getStations()
         if (!cancelled && Array.isArray(list) && list.length > 0) {
           setStations(list)
-          setStation((prev) => prev || list[0].station_name || list[0].station_code)
+          const rivers = dashboardApi.uniqueRiverNamesFromStations(list)
+          setRiver((prev) => prev || rivers[0] || '')
         }
       } catch (e) {
         if (!cancelled) setError(e.message || 'Failed to load stations')
@@ -55,13 +57,16 @@ export default function AnomalyDetectionPage() {
 
   useEffect(() => {
     let cancelled = false
-    if (!station && stations.length === 0) return
-    const s = station || (stations[0]?.station_name || stations[0]?.station_code)
-    if (!s) return
+    if (stations.length === 0) {
+      setLoading(false)
+      return
+    }
     setLoading(true)
-    fetchData().then(() => { if (!cancelled) setLoading(false) }).catch(() => { if (!cancelled) setLoading(false) })
+    fetchData()
+      .then(() => { if (!cancelled) setLoading(false) })
+      .catch(() => { if (!cancelled) setLoading(false) })
     return () => { cancelled = true }
-  }, [station, stations.length])
+  }, [fetchData, stations.length])
 
   const runAnomalyDetection = async () => {
     setRunning(true)
@@ -81,7 +86,7 @@ export default function AnomalyDetectionPage() {
       <div>
         <h1 className="font-display text-2xl font-semibold text-surface-900">Anomaly detection</h1>
         <p className="text-surface-600 mt-0.5">
-          Isolation Forest on WQI. Select station to view anomalies (abnormal spikes). Chart and table show Station, Date, WQI, Reason.
+          Isolation Forest on WQI. Select a river to scope anomalies. Chart and table show river, station, date, WQI, and reason.
         </p>
       </div>
 
@@ -93,18 +98,16 @@ export default function AnomalyDetectionPage() {
 
       <div className="flex flex-wrap items-center gap-4">
         <div>
-          <label className="label">Station name</label>
+          <label className="label">River</label>
           <select
-            value={station}
-            onChange={(e) => setStation(e.target.value)}
-            className="input-field w-auto min-w-[200px]"
+            value={river}
+            onChange={(e) => setRiver(e.target.value)}
+            className="input-field w-auto min-w-[220px]"
             disabled={loading || stations.length === 0}
           >
-            {stations.length === 0 && <option value="">No stations</option>}
-            {stations.map((s) => (
-              <option key={s.station_code} value={s.station_name || s.station_code}>
-                {s.station_name || s.station_code}
-              </option>
+            <option value="">All rivers</option>
+            {dashboardApi.uniqueRiverNamesFromStations(stations).map((rn) => (
+              <option key={rn} value={rn}>{rn}</option>
             ))}
           </select>
         </div>
@@ -126,7 +129,7 @@ export default function AnomalyDetectionPage() {
         {loading ? (
           <p className="text-surface-500 py-8">Loading…</p>
         ) : timeSeries.length === 0 ? (
-          <div className="h-[340px] flex items-center justify-center text-surface-500">No time series for this station. Ensure backend and dataset are loaded.</div>
+          <div className="h-[340px] flex items-center justify-center text-surface-500">No time series for this river. Ensure backend and dataset are loaded.</div>
         ) : (
           <WQIAnomalyChart data={timeSeries} anomalies={anomalies} height={340} />
         )}
@@ -134,11 +137,12 @@ export default function AnomalyDetectionPage() {
 
       <div className="card">
         <h2 className="font-display font-semibold text-surface-800 mb-4">Anomaly table</h2>
-        <p className="text-sm text-surface-500 mb-4">Station, Date, WQI, Reason (Abnormal spike).</p>
+        <p className="text-sm text-surface-500 mb-4">River, station, date, WQI, reason (abnormal spike).</p>
         <div className="overflow-x-auto rounded-lg border border-surface-200">
           <table className="w-full text-sm">
             <thead>
               <tr className="bg-surface-100 text-left">
+                <th className="px-4 py-2 font-medium text-surface-700">River</th>
                 <th className="px-4 py-2 font-medium text-surface-700">Station</th>
                 <th className="px-4 py-2 font-medium text-surface-700">Date</th>
                 <th className="px-4 py-2 font-medium text-surface-700">WQI</th>
@@ -147,10 +151,11 @@ export default function AnomalyDetectionPage() {
             </thead>
             <tbody>
               {anomalies.length === 0 ? (
-                <tr><td colSpan={4} className="px-4 py-8 text-center text-surface-500">No anomalies for this station.</td></tr>
+                <tr><td colSpan={5} className="px-4 py-8 text-center text-surface-500">No anomalies for this river.</td></tr>
               ) : (
                 anomalies.map((a, i) => (
                   <tr key={i} className="border-t border-surface-100 hover:bg-surface-50">
+                    <td className="px-4 py-2 text-surface-800">{a.river_name || '—'}</td>
                     <td className="px-4 py-2 font-medium text-surface-800">{a.station_name || a.station_code || '—'}</td>
                     <td className="px-4 py-2 text-surface-800">{a.date || '—'}</td>
                     <td className="px-4 py-2">{a.wqi != null ? Number(a.wqi).toFixed(1) : '—'}</td>

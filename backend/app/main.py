@@ -27,6 +27,8 @@ async def lifespan(app: FastAPI):
     try:
         from backend.services.dataset_loader import run_startup_data_load
         run_startup_data_load()
+        from backend.db.repository import migrate_store_river_names
+        migrate_store_river_names()
         print("Default dataset loaded; stations and WQI data ready.")
     except Exception as e:
         print("Dataset load skipped:", e)

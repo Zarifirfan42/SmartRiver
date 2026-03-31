@@ -19,9 +19,10 @@ def list_alerts(
 @router.get("/by-type")
 def list_alerts_by_type(
     limit: int = Query(100, ge=1, le=500),
+    river_name: str = Query(None, description="Show alerts only for this river (e.g. Sungai Klang)"),
 ):
     """Historical alerts (latest date first) and Forecast alerts (earliest forecast date first)."""
     return {
-        "historical": get_historical_alerts(limit=limit),
-        "forecast": get_forecast_alerts(limit=limit),
+        "historical": get_historical_alerts(limit=limit, river_name=river_name),
+        "forecast": get_forecast_alerts(limit=limit, river_name=river_name),
     }

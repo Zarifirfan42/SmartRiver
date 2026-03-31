@@ -25,6 +25,7 @@ def run_forecast() -> list[dict]:
         sys.path.insert(0, str(ROOT))
 
     from backend.db.repository import _store, save_prediction_log, save_alert, status_from_wqi
+    from backend.services.river_mapping import river_name_for_station
 
     readings = list(_store.get("readings", []))
     if not readings:
@@ -103,10 +104,12 @@ def run_forecast() -> list[dict]:
                 pred_wqi = float(model.predict(X_pred)[0])
                 pred_wqi = max(0.0, min(100.0, round(pred_wqi, 1)))
                 status = status_from_wqi(pred_wqi)
+                # station here is the label encoded from training (usually station_name, e.g. Sungai Klang).
                 forecast.append({
                     "date": date_str,
                     "station_code": station,
                     "station_name": station,
+                    "river_name": river_name_for_station(station, station),
                     "wqi": pred_wqi,
                     "river_status": status,
                 })

@@ -17,8 +17,8 @@ export default function AlertMonitoringPage() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
 
-  // Filters
-  const [stationFilter, setStationFilter] = useState('')
+  // Filters — river aligned with backend river_name
+  const [riverFilter, setRiverFilter] = useState('')
   const [statusFilter, setStatusFilter] = useState('') // '' | slightly_polluted | polluted
   const [typeFilter, setTypeFilter] = useState('all') // all | historical | forecast
 
@@ -42,7 +42,10 @@ export default function AlertMonitoringPage() {
       setLoading(true)
       setError(null)
       try {
-        const { historical, forecast } = await dashboardApi.getAlertsByType({ limit: 500 })
+        const { historical, forecast } = await dashboardApi.getAlertsByType({
+          limit: 500,
+          river_name: riverFilter || undefined,
+        })
         if (!cancelled) {
           setHistoricalAlerts(Array.isArray(historical) ? historical : [])
           setForecastAlerts(Array.isArray(forecast) ? forecast : [])
@@ -59,32 +62,28 @@ export default function AlertMonitoringPage() {
     }
     fetchAlerts()
     return () => { cancelled = true }
-  }, [])
+  }, [riverFilter])
 
   const filteredHistorical = useMemo(() => {
     const filtered = historicalAlerts.filter((a) => {
-      const name = a.station_name || a.station_code || ''
-      if (stationFilter && name !== stationFilter) return false
       if (statusFilter && a.river_status !== statusFilter) return false
       return true
     })
     return [...filtered].sort((a, b) => String(b.date || '').localeCompare(String(a.date || '')))
-  }, [historicalAlerts, stationFilter, statusFilter])
+  }, [historicalAlerts, statusFilter])
 
   const filteredForecast = useMemo(() => {
     return forecastAlerts.filter((a) => {
-      const name = a.station_name || a.station_code || ''
-      if (stationFilter && name !== stationFilter) return false
       if (statusFilter && a.river_status !== statusFilter) return false
       return true
     })
-  }, [forecastAlerts, stationFilter, statusFilter])
+  }, [forecastAlerts, statusFilter])
 
   const allAlerts = [...filteredHistorical, ...filteredForecast]
   const slightlyCount = allAlerts.filter((a) => a.river_status === 'slightly_polluted').length
   const pollutedCount = allAlerts.filter((a) => a.river_status === 'polluted').length
 
-  const filtersActive = Boolean(stationFilter || statusFilter)
+  const filtersActive = Boolean(riverFilter || statusFilter)
   const hasNoAlerts = !loading && filteredHistorical.length === 0 && filteredForecast.length === 0
 
   const showHistorical = typeFilter === 'all' || typeFilter === 'historical'
@@ -120,21 +119,16 @@ export default function AlertMonitoringPage() {
       <div className="rounded-xl border border-surface-200 bg-white p-4 shadow-sm">
         <div className="flex flex-wrap items-end gap-4">
           <div>
-            <label className="label">Station</label>
+            <label className="label">River</label>
             <select
-              value={stationFilter}
-              onChange={(e) => setStationFilter(e.target.value)}
+              value={riverFilter}
+              onChange={(e) => setRiverFilter(e.target.value)}
               className="input-field w-auto min-w-[220px]"
             >
-              <option value="">All stations</option>
-              {stations.map((s) => {
-                const v = s.station_name || s.station_code
-                return (
-                  <option key={s.station_code || s.station_name} value={v}>
-                    {v}
-                  </option>
-                )
-              })}
+              <option value="">All rivers</option>
+              {dashboardApi.uniqueRiverNamesFromStations(stations).map((rn) => (
+                <option key={rn} value={rn}>{rn}</option>
+              ))}
             </select>
           </div>
           <div>
@@ -183,7 +177,7 @@ export default function AlertMonitoringPage() {
             {filtersActive ? 'No alerts match the selected filters.' : 'No alerts. All rivers are clean.'}
           </p>
           {filtersActive && (
-            <p className="text-sm text-surface-500 mt-2">Try changing station or status filters.</p>
+            <p className="text-sm text-surface-500 mt-2">Try changing river or status filters.</p>
           )}
         </div>
       )}
@@ -216,6 +210,7 @@ export default function AlertMonitoringPage() {
                 ) : (
                   filteredHistorical.map((a, i) => (
                     <tr key={`${a.station_name || a.station_code}-${a.date}-${i}`} className="border-t border-surface-100">
+                      <td className="px-4 py-2 text-surface-800">{a.river_name || '—'}</td>
                       <td className="px-4 py-2 font-medium text-surface-800">{a.station_name || a.station_code || '—'}</td>
                       <td className="px-4 py-2 text-surface-800">{a.date || '—'}</td>
                       <td className="px-4 py-2">{a.wqi != null ? Number(a.wqi).toFixed(1) : '—'}</td>
@@ -239,7 +234,8 @@ export default function AlertMonitoringPage() {
             <table className="w-full text-sm">
               <thead>
                 <tr className="bg-surface-100 text-left">
-                  <th className="px-4 py-2 font-medium text-surface-700">Station name</th>
+                  <th className="px-4 py-2 font-medium text-surface-700">River</th>
+                  <th className="px-4 py-2 font-medium text-surface-700">Station</th>
                   <th className="px-4 py-2 font-medium text-surface-700">Forecast date</th>
                   <th className="px-4 py-2 font-medium text-surface-700">WQI</th>
                   <th className="px-4 py-2 font-medium text-surface-700">Status</th>
@@ -248,10 +244,11 @@ export default function AlertMonitoringPage() {
               </thead>
               <tbody>
                 {!loading && filteredForecast.length === 0 ? (
-                  <tr><td colSpan={5} className="px-4 py-8 text-center text-surface-500">No forecast alerts</td></tr>
+                  <tr><td colSpan={6} className="px-4 py-8 text-center text-surface-500">No forecast alerts</td></tr>
                 ) : (
                   filteredForecast.map((a, i) => (
                     <tr key={`${a.station_name || a.station_code}-${a.date}-${i}`} className="border-t border-surface-100">
+                      <td className="px-4 py-2 text-surface-800">{a.river_name || '—'}</td>
                       <td className="px-4 py-2 font-medium text-surface-800">{a.station_name || a.station_code || '—'}</td>
                       <td className="px-4 py-2 text-surface-800">{a.date || '—'}</td>
                       <td className="px-4 py-2">{a.wqi != null ? Number(a.wqi).toFixed(1) : '—'}</td>

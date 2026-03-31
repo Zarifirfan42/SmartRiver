@@ -8,7 +8,7 @@ from fastapi import APIRouter, UploadFile, File, HTTPException, Query, Depends
 from backend.auth.dependencies import require_admin
 
 router = APIRouter()
-ROOT = Path(__file__).resolve().parents[3]
+ROOT = Path(__file__).resolve().parents[2]
 
 
 def _ensure_path():
@@ -61,6 +61,45 @@ async def train_models(
     except Exception as e:
         metrics["anomaly"] = {"error": str(e)}
     return {"message": "Training complete", "metrics": metrics}
+
+
+@router.post("/train-uploaded")
+def train_models_on_uploaded_csv(
+    filename: str = Query(..., description="CSV file name in datasets/uploads (e.g. from last upload)"),
+    lstm_epochs: int = Query(12, ge=1, le=200),
+    current_user: dict = Depends(require_admin),
+):
+    """
+    Train RF, LSTM (if TensorFlow installed), and Isolation Forest on an uploaded CSV
+    using the same pipeline as ml_engine/train.py (data_preprocessing.services.pipeline).
+    """
+    _ensure_path()
+    safe = Path(filename).name
+    if safe != filename or ".." in filename:
+        raise HTTPException(status_code=400, detail="Invalid filename")
+    csv_path = ROOT / "datasets" / "uploads" / safe
+    if not csv_path.is_file():
+        raise HTTPException(status_code=404, detail=f"Upload not found: {safe}")
+    try:
+        from ml_engine.train import run_training_from_paths
+    except ImportError as e:
+        raise HTTPException(status_code=503, detail=f"Training module unavailable: {e}")
+
+    metrics = run_training_from_paths(
+        [csv_path],
+        lstm_epochs=lstm_epochs,
+        lstm_verbose=0,
+        write_metrics_json=True,
+        print_summary=False,
+    )
+    lstm_info = metrics.get("lstm_regression") or {}
+    return {
+        "success": True,
+        "message": "Upload successful: data loaded, models trained, and saved under ml_models/.",
+        "filename": safe,
+        "metrics": metrics,
+        "lstm_trained": "error" not in lstm_info,
+    }
 
 
 @router.post("/predict/classification")

@@ -22,10 +22,11 @@ function formatStatus(s) {
 }
 
 function exportCsv(rows) {
-  const headers = ['Station Name', 'Date', 'WQI', 'River Status']
+  const headers = ['River', 'Station Name', 'Date', 'WQI', 'River Status']
   const csv = [headers.join(',')].concat(
     rows.map((r) =>
       [
+        `"${(r.river_name || '').replace(/"/g, '""')}"`,
         `"${(r.station_name || r.station || '').replace(/"/g, '""')}"`,
         r.date || '',
         r.wqi != null ? Number(r.wqi) : '',
@@ -51,9 +52,9 @@ function exportPrint(rows) {
     <h1>SmartRiver — Dataset Report</h1>
     <p>Generated: ${new Date().toLocaleString()}</p>
     <table>
-    <thead><tr><th>Station Name</th><th>Date</th><th>WQI</th><th>River Status</th></tr></thead>
+    <thead><tr><th>River</th><th>Station</th><th>Date</th><th>WQI</th><th>River Status</th></tr></thead>
     <tbody>
-    ${(rows || []).map((r) => `<tr><td>${(r.station_name || r.station || '—').replace(/</g, '&lt;')}</td><td>${r.date || '—'}</td><td>${r.wqi != null ? Number(r.wqi).toFixed(1) : '—'}</td><td>${formatStatus(r.river_status)}</td></tr>`).join('')}
+    ${(rows || []).map((r) => `<tr><td>${(r.river_name || '—').replace(/</g, '&lt;')}</td><td>${(r.station_name || r.station || '—').replace(/</g, '&lt;')}</td><td>${r.date || '—'}</td><td>${r.wqi != null ? Number(r.wqi).toFixed(1) : '—'}</td><td>${formatStatus(r.river_status)}</td></tr>`).join('')}
     </tbody></table></body></html>
   `)
   w.document.close()
@@ -75,6 +76,9 @@ export default function Dashboard() {
   const [years, setYears] = useState([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
+
+  /** Primary scope for dashboard: canonical river name (backend `river_name`). Empty = all rivers. */
+  const [dashboardRiver, setDashboardRiver] = useState('')
 
   // Station WQI Trend
   const [trendStation, setTrendStation] = useState('')
@@ -99,24 +103,14 @@ export default function Dashboard() {
       setLoading(true)
       setError(null)
       try {
-        const [s, stationList, yearList] = await Promise.all([
-          dashboardApi.getSummary(),
+        const [stationList, yearList] = await Promise.all([
           dashboardApi.getStations(),
           dashboardApi.getYears(),
         ])
         if (cancelled) return
-        setSummary({
-          totalStations: s.totalStations ?? 0,
-          avgWqi: s.avgWqi ?? 0,
-          cleanCount: s.cleanCount ?? 0,
-          pollutedCount: s.pollutedCount ?? 0,
-          slightlyPollutedCount: s.slightlyPollutedCount ?? 0,
-        })
         const st = Array.isArray(stationList) ? stationList : []
         setStations(st)
         setYears(Array.isArray(yearList) ? yearList : [])
-        if (st.length > 0 && !trendStation) setTrendStation(st[0].station_name || st[0].station_code)
-        if (isAdmin && st.length > 0 && !anomalyStation) setAnomalyStation(st[0].station_name || st[0].station_code)
       } catch (err) {
         if (!cancelled) setError(err.message || 'Failed to load dashboard')
       } finally {
@@ -126,6 +120,24 @@ export default function Dashboard() {
     load()
     return () => { cancelled = true }
   }, [])
+
+  useEffect(() => {
+    let cancelled = false
+    dashboardApi
+      .getSummary({ river_name: dashboardRiver || undefined })
+      .then((s) => {
+        if (cancelled) return
+        setSummary({
+          totalStations: s.totalStations ?? 0,
+          avgWqi: s.avgWqi ?? 0,
+          cleanCount: s.cleanCount ?? 0,
+          pollutedCount: s.pollutedCount ?? 0,
+          slightlyPollutedCount: s.slightlyPollutedCount ?? 0,
+        })
+      })
+      .catch(() => {})
+    return () => { cancelled = true }
+  }, [dashboardRiver])
 
   async function handleExportCsv() {
     try {
@@ -151,22 +163,25 @@ export default function Dashboard() {
 
   useEffect(() => {
     let cancelled = false
-    const station = trendStation || (stations[0]?.station_name || stations[0]?.station_code)
-    if (!station) return
-    dashboardApi.getTimeSeries({ station_name: station, year: trendYear || undefined, limit: 1000 }).then((res) => {
-      if (!cancelled) setTimeSeries(Array.isArray(res?.series) ? res.series : [])
-    }).catch(() => { if (!cancelled) setTimeSeries([]) })
+    dashboardApi
+      .getTimeSeries({
+        river_name: dashboardRiver || undefined,
+        year: trendYear || undefined,
+        limit: 1000,
+      })
+      .then((res) => {
+        if (!cancelled) setTimeSeries(Array.isArray(res?.series) ? res.series : [])
+      })
+      .catch(() => { if (!cancelled) setTimeSeries([]) })
     return () => { cancelled = true }
-  }, [trendStation, trendYear, stations.length])
+  }, [dashboardRiver, trendYear])
 
   useEffect(() => {
     if (!isAdmin) return
     let cancelled = false
-    const station = anomalyStation || (stations[0]?.station_name || stations[0]?.station_code)
-    if (!station) return
     Promise.all([
-      dashboardApi.getTimeSeries({ station_name: station, limit: 500 }),
-      dashboardApi.getAnomalies({ station_code: station, limit: 500 }),
+      dashboardApi.getTimeSeries({ river_name: dashboardRiver || undefined, limit: 500 }),
+      dashboardApi.getAnomalies({ river_name: dashboardRiver || undefined, limit: 500 }),
     ]).then(([tsRes, anom]) => {
       if (!cancelled) {
         setAnomalyTimeSeries(Array.isArray(tsRes?.series) ? tsRes.series : [])
@@ -174,11 +189,11 @@ export default function Dashboard() {
       }
     }).catch(() => { if (!cancelled) { setAnomalyTimeSeries([]); setAnomalies([]) } })
     return () => { cancelled = true }
-  }, [isAdmin, anomalyStation, stations.length])
+  }, [isAdmin, dashboardRiver])
 
   useEffect(() => {
     let cancelled = false
-    dashboardApi.getAlertsByType({ limit: 200 }).then(({ historical }) => {
+    dashboardApi.getAlertsByType({ limit: 200, river_name: dashboardRiver || undefined }).then(({ historical }) => {
       if (cancelled) return
       const combined = Array.isArray(historical) ? historical : []
       const polluted = combined.filter((a) => (a.river_status || '').toLowerCase() === 'polluted')
@@ -189,12 +204,30 @@ export default function Dashboard() {
       setLatestCriticalAlert(latestPolluted || latestSlightly || null)
     }).catch(() => { if (!cancelled) setLatestCriticalAlert(null) })
     return () => { cancelled = true }
-  }, [])
+  }, [dashboardRiver])
 
   return (
     <div className="space-y-6">
       <h1 className="text-2xl font-semibold text-slate-900">Dashboard</h1>
-      <div className="text-sm text-surface-500">
+      <div className="flex flex-wrap items-end gap-4 mt-2">
+        <div>
+          <label className="label">River</label>
+          <select
+            value={dashboardRiver}
+            onChange={(e) => setDashboardRiver(e.target.value)}
+            className="input-field w-auto min-w-[220px]"
+          >
+            <option value="">All rivers</option>
+            {dashboardApi.uniqueRiverNamesFromStations(stations).map((rn) => (
+              <option key={rn} value={rn}>{rn}</option>
+            ))}
+          </select>
+        </div>
+        <p className="text-sm text-surface-500 pb-1">
+          Scope KPIs, map, table export, trends, and alerts to one water body — or view all rivers.
+        </p>
+      </div>
+      <div className="text-sm text-surface-500 mt-2">
         <div>Data source: historical and simulated live monitoring</div>
         <div>Last Updated: {lastUpdated}</div>
       </div>
@@ -211,6 +244,7 @@ export default function Dashboard() {
         cleanCount={summary.cleanCount}
         pollutedCount={summary.pollutedCount}
         slightlyPollutedCount={summary.slightlyPollutedCount}
+        riverName={dashboardRiver}
       />
 
       {/* WQI classification panel */}
@@ -270,7 +304,15 @@ export default function Dashboard() {
           <h2 className="font-display font-semibold text-surface-800">Monitoring Stations Map</h2>
           <p className="text-sm text-surface-500">Visual overview of monitoring stations with their latest WQI and river status from the dataset.</p>
         </div>
-        <RiverMap stations={stations} height={360} useDefaultStations={stations.length === 0} />
+        <RiverMap
+          stations={
+            dashboardRiver
+              ? stations.filter((s) => (s.river_name || s.station_name) === dashboardRiver)
+              : stations
+          }
+          height={360}
+          useDefaultStations={stations.length === 0}
+        />
       </div>
 
       {/* Export Report — CSV, PDF, Print */}
@@ -299,9 +341,10 @@ export default function Dashboard() {
       <div className="mt-6">
         <DatasetTable
           title="Dataset overview"
-          description="Filtered view of dataset records: Station Name, Date, WQI, and River Status, with sorting and pagination."
+          description="Filtered view: river, station, date, WQI, and status. Sorting and pagination."
           onDataChange={setExportData}
           onQueryChange={setExportQuery}
+          syncedRiverName={dashboardRiver}
         />
       </div>
 
@@ -309,28 +352,13 @@ export default function Dashboard() {
       <div className="mt-6 rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
         <h2 className="font-display font-semibold text-surface-800 mb-4">WQI trend analysis</h2>
         <p className="text-sm text-surface-500 mb-4">
-          Historical and simulated live WQI over time for the selected station and year.{' '}
+          Historical and simulated live WQI over time for the river selected above (and optional year).{' '}
           <Link to="/forecast" className="font-medium text-cyan-700 hover:text-cyan-900 underline">
             Open Pollution Forecast
           </Link>
           {' '}for predicted WQI.
         </p>
         <div className="flex flex-wrap gap-4 mb-4">
-          <div>
-            <label className="label">Station</label>
-            <select
-              value={trendStation}
-              onChange={(e) => setTrendStation(e.target.value)}
-              className="input-field w-auto min-w-[200px]"
-            >
-              <option value="">All stations</option>
-              {stations.map((s) => (
-                <option key={s.station_code} value={s.station_name || s.station_code}>
-                  {s.station_name || s.station_code}
-                </option>
-              ))}
-            </select>
-          </div>
           <div>
             <label className="label">Year</label>
             <select
@@ -355,21 +383,7 @@ export default function Dashboard() {
       {isAdmin && (
         <div className="mt-6 rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
           <h2 className="font-display font-semibold text-surface-800 mb-4">Anomaly Detection</h2>
-          <p className="text-sm text-surface-500 mb-4">Select station. Anomalies (abnormal spikes) are marked on the chart and listed in the table.</p>
-          <div className="mb-4">
-            <label className="label">Station name</label>
-            <select
-              value={anomalyStation}
-              onChange={(e) => setAnomalyStation(e.target.value)}
-              className="input-field w-auto min-w-[200px]"
-            >
-              {stations.map((s) => (
-                <option key={s.station_code} value={s.station_name || s.station_code}>
-                  {s.station_name || s.station_code}
-                </option>
-              ))}
-            </select>
-          </div>
+          <p className="text-sm text-surface-500 mb-4">Uses the river scope from the top of the dashboard. Anomalies are marked on the chart and listed below.</p>
           <div className="mb-4">
             <h3 className="font-medium text-surface-700 mb-2">Anomaly Chart</h3>
             {anomalyTimeSeries.length > 0 ? (
@@ -384,6 +398,7 @@ export default function Dashboard() {
               <table className="w-full text-sm">
                 <thead>
                   <tr className="bg-surface-100 text-left">
+                    <th className="px-4 py-2 font-medium text-surface-700">River</th>
                     <th className="px-4 py-2 font-medium text-surface-700">Station</th>
                     <th className="px-4 py-2 font-medium text-surface-700">Date</th>
                     <th className="px-4 py-2 font-medium text-surface-700">WQI</th>
@@ -392,10 +407,11 @@ export default function Dashboard() {
                 </thead>
                 <tbody>
                   {anomalies.length === 0 ? (
-                    <tr><td colSpan={4} className="px-4 py-6 text-center text-surface-500">No anomalies for this station.</td></tr>
+                    <tr><td colSpan={5} className="px-4 py-6 text-center text-surface-500">No anomalies for this river.</td></tr>
                   ) : (
                     anomalies.map((a, i) => (
                       <tr key={i} className="border-t border-surface-100">
+                        <td className="px-4 py-2 text-surface-800">{a.river_name || '—'}</td>
                         <td className="px-4 py-2 text-surface-800">{a.station_name || a.station_code || '—'}</td>
                         <td className="px-4 py-2 text-surface-800">{a.date || '—'}</td>
                         <td className="px-4 py-2">{a.wqi != null ? Number(a.wqi).toFixed(1) : '—'}</td>

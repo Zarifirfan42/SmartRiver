@@ -24,6 +24,7 @@ def run_anomaly_detection(
     import pandas as pd
     import joblib
     from backend.db.repository import save_prediction_log, save_alert
+    from backend.services.river_mapping import river_name_for_station
 
     if df is None:
         if not input_path or not Path(input_path).exists():
@@ -51,6 +52,7 @@ def run_anomaly_detection(
 
     date_col = "date" if "date" in df.columns else None
     station_col = "station_code" if "station_code" in df.columns else None
+    station_name_col = "station_name" if "station_name" in df.columns else None
     wqi_col = "WQI" if "WQI" in df.columns else "wqi" if "wqi" in df.columns else None
 
     anomalies = []
@@ -71,6 +73,11 @@ def run_anomaly_detection(
             rec["station_code"] = str(df.iloc[i][station_col]).strip()
         else:
             rec["station_code"] = "—"
+        if station_name_col:
+            rec["station_name"] = str(df.iloc[i][station_name_col]).strip()
+        else:
+            rec["station_name"] = rec.get("station_code") or "—"
+        rec["river_name"] = river_name_for_station(rec.get("station_code"), rec.get("station_name"))
         if wqi_col and wqi_col in df.columns:
             try:
                 rec["wqi"] = float(df.iloc[i][wqi_col])

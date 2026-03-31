@@ -15,6 +15,8 @@ from sklearn.metrics import (
     f1_score,
     confusion_matrix,
     classification_report,
+    precision_score,
+    recall_score,
 )
 
 
@@ -48,14 +50,25 @@ def train(
         raise ValueError("No feature columns found")
 
     X = df[feature_cols].fillna(0)
-    y = df[target_column]
-    # Map to 0,1,2 for sklearn
-    classes = list(pd.Categorical(y).categories)
-    if not all(s in RIVER_STATUS_ORDER for s in classes):
-        y = y.astype(str).str.lower().str.replace(" ", "_")
+    y = df[target_column].astype(str).str.lower().str.replace(" ", "_")
+    valid = y.isin(RIVER_STATUS_ORDER)
+    if not valid.all():
+        n_bad = int((~valid).sum())
+        # Typical cause: NaN WQI → "unknown" from wqi_to_status after merging CSVs.
+        X = X.loc[valid].reset_index(drop=True)
+        y = y.loc[valid].reset_index(drop=True)
+        if len(y) == 0:
+            raise ValueError(
+                "No rows with river_status in {clean, slightly_polluted, polluted}. "
+                "Check WQI/parameter columns after preprocessing."
+            )
+        import warnings
+        warnings.warn(
+            f"Dropped {n_bad} row(s) with invalid river_status (e.g. unknown); training on {len(y)} rows.",
+            UserWarning,
+            stacklevel=2,
+        )
     y_enc = pd.Categorical(y, categories=RIVER_STATUS_ORDER).codes
-    if np.any(y_enc < 0):
-        raise ValueError("Target must be clean / slightly_polluted / polluted")
 
     X_train, X_test, y_train, y_test = train_test_split(
         X, y_enc, test_size=test_size, random_state=random_state, stratify=y_enc
@@ -73,15 +86,26 @@ def train(
     y_pred = model.predict(X_test)
     accuracy = accuracy_score(y_test, y_pred)
     f1_weighted = f1_score(y_test, y_pred, average="weighted", zero_division=0)
+    precision_w = precision_score(y_test, y_pred, average="weighted", zero_division=0)
+    recall_w = recall_score(y_test, y_pred, average="weighted", zero_division=0)
+    f1_macro = f1_score(y_test, y_pred, average="macro", zero_division=0)
     cm = confusion_matrix(y_test, y_pred, labels=[0, 1, 2])
 
     metrics = {
         "accuracy": float(accuracy),
         "f1_weighted": float(f1_weighted),
+        "f1_macro": float(f1_macro),
+        "precision_weighted": float(precision_w),
+        "recall_weighted": float(recall_w),
         "confusion_matrix": cm.tolist(),
         "labels": RIVER_STATUS_ORDER,
         "classification_report": classification_report(
-            y_test, y_pred, target_names=RIVER_STATUS_ORDER, zero_division=0, output_dict=True
+            y_test,
+            y_pred,
+            labels=[0, 1, 2],
+            target_names=RIVER_STATUS_ORDER,
+            zero_division=0,
+            output_dict=True,
         ),
     }
 

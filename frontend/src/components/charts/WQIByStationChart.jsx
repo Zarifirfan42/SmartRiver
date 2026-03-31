@@ -87,7 +87,7 @@ function getBarColor(wqi) {
 }
 
 export default function WQIByStationChart({ stations = [], height = 320 }) {
-  const labels = stations.map((s) => s.station_name || s.station_code || 'Unknown')
+  const labels = stations.map((s) => s.river_name || s.station_name || s.station_code || 'Unknown')
   const values = stations.map((s) => Number(s.latest_wqi) ?? 0)
   const backgroundColors = values.map(getBarColor)
 

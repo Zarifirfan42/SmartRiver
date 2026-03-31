@@ -4,9 +4,14 @@
  */
 import api from './client'
 
-export async function getSummary() {
-  const { data } = await api.get('/dashboard/summary')
+export async function getSummary(params = {}) {
+  const { data } = await api.get('/dashboard/summary', { params })
   return data
+}
+
+export async function getRivers() {
+  const { data } = await api.get('/dashboard/rivers')
+  return data.rivers || []
 }
 
 export async function getTimeSeries(params = {}) {
@@ -38,6 +43,16 @@ export async function getAlertsByType(params = {}) {
     historical: data.historical || [],
     forecast: data.forecast || [],
   }
+}
+
+/** Prefer API river_name on each station; fallback for legacy rows. */
+export function uniqueRiverNamesFromStations(stations) {
+  const out = new Set()
+  ;(stations || []).forEach((s) => {
+    const n = (s.river_name || '').trim() || (s.station_name || s.station_code || '').trim()
+    if (n) out.add(n)
+  })
+  return [...out].sort()
 }
 
 export async function getAnomalies(params = {}) {

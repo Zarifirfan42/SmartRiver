@@ -2,6 +2,14 @@
 Preprocess dataset — Load CSV from /datasets, clean, impute, select features,
 compute and normalize WQI, then train-test split.
 
+Target schema (after `load_dataset`), for exporter / examiner alignment:
+- **date** — parsed datetime (from `date`, `SMP-DAT`, `Tarikh`, …)
+- **station_code** — monitoring site ID (`station_code`, `ID STN BARU`, `LOCATION`, …)
+- **station_name** — human site label (prefer `LOCATION`)
+- **river_name** — canonical river (`river_name` column if present; else inferred from `SUNGAI` / code map)
+- **DO, BOD, COD, AN, TSS, pH** — parameters (aliases: NH3-N → AN, SS → TSS); optional if **WQI** already in file
+- **WQI, river_status** — added or validated in `add_wqi`
+
 Run from project root:
   python -m modules.data_preprocessing.preprocess_dataset
   python -m modules.data_preprocessing.preprocess_dataset --datasets-dir datasets --output-dir datasets/processed
@@ -41,10 +49,67 @@ PARAM_COLS = ["DO", "BOD", "COD", "AN", "TSS", "pH"]
 DATE_COL = "date"
 STATION_COL = "station_code"
 
+# Date column labels across lab CSVs, DOE exports, and simplified samples
+_DATE_SYNONYMS = (
+    "date",
+    "Date",
+    "DATE",
+    "reading_date",
+    "timestamp",
+    "SMP-DAT",
+    "SMP_DAT",
+    "SMP-DAT ",
+    "Tarikh",
+    "tarikh",
+)
+
+# Prefer true station ID before generic location (avoids duplicate-collapse bugs)
+_STATION_SYNONYMS = (
+    "station_code",
+    "Station Code",
+    "station",
+    "Station",
+    "ID STN BARU",
+    "ID STN (2016)",
+    "ID STN(2016)",
+    " ID STN (2016)",
+    "LOCATION",
+    "Location",
+    "location",
+    "SUNGAI",
+)
+
+
+def _strip_column_index(cols: pd.Index) -> pd.Index:
+    """Trim BOM/whitespace/newlines from CSV headers (common in DOE exports)."""
+    out = []
+    for c in cols:
+        s = str(c).strip().replace("\ufeff", "").replace("\r", "")
+        out.append(s)
+    return pd.Index(out)
+
+
+def _find_first_column(df: pd.DataFrame, candidates: tuple[str, ...]) -> str | None:
+    """Resolve first matching column (exact or case-insensitive)."""
+    if df is None or df.empty:
+        return None
+    lower_map = {str(c).strip().lower(): c for c in df.columns}
+    for cand in candidates:
+        if cand in df.columns:
+            return cand
+        lc = cand.strip().lower()
+        if lc in lower_map:
+            return lower_map[lc]
+    return None
+
 
 def load_dataset(datasets_dir: Path, filename: str | None = None) -> pd.DataFrame:
     """
     Load CSV from datasets folder. If filename is None, use the first CSV found.
+
+    Supports:
+    - Simplified monitoring CSV (date, station_code, DO, BOD, …) e.g. sample_water_quality.csv
+    - DOE-style exports with SMP-DAT, ID STN BARU, LOCATION, SUNGAI, messy headers (BOD\\nmg/l), etc.
     """
     datasets_dir = Path(datasets_dir)
     if not datasets_dir.is_dir():
@@ -61,34 +126,55 @@ def load_dataset(datasets_dir: Path, filename: str | None = None) -> pd.DataFram
         path = csvs[0]
 
     df = pd.read_csv(path)
-    # Normalize column names (DOE aliases)
+    df.columns = _strip_column_index(df.columns)
+
+    # Normalize measurement column names (DO, BOD, …)
     if HAS_WQI_CALC:
         df = normalize_column_names(df)
     else:
         df = _normalize_columns_fallback(df)
 
-    # Standardize date and station columns
-    for col in ["date", "Date", "reading_date", "timestamp"]:
-        if col in df.columns:
-            df[DATE_COL] = pd.to_datetime(df[col], errors="coerce")
-            break
-    if DATE_COL not in df.columns:
+    date_src = _find_first_column(df, _DATE_SYNONYMS)
+    if date_src:
+        # dayfirst=True breaks ISO dates like 2023-01-13 (treated as invalid Y-D-M). Use default parsing.
+        df[DATE_COL] = pd.to_datetime(df[date_src], errors="coerce", utc=False)
+    else:
         df[DATE_COL] = pd.NaT
 
-    for col in ["station", "station_code", "Station", "location"]:
-        if col in df.columns:
-            df[STATION_COL] = df[col].astype(str)
-            break
-    if STATION_COL not in df.columns:
+    st_src = _find_first_column(df, _STATION_SYNONYMS)
+    if st_src:
+        df[STATION_COL] = df[st_src].astype(str).str.strip()
+    else:
         df[STATION_COL] = "S01"
 
-    # Optional: canonical station name from dataset (for dashboard / River Health)
-    for name_col in ["station_name", "Station Name", "location", "Station", "station"]:
-        if name_col in df.columns and name_col != STATION_COL:
-            df["station_name"] = df[name_col].astype(str)
-            break
-    if "station_name" not in df.columns:
-        df["station_name"] = df[STATION_COL]
+    # Human-readable site label (prefer LOCATION over junk numeric station_name)
+    name_src = _find_first_column(
+        df,
+        ("LOCATION", "Location", "location", "Station Name", "station_name", "SUNGAI"),
+    )
+    if name_src:
+        df["station_name"] = df[name_src].astype(str).str.strip()
+    else:
+        df["station_name"] = df[STATION_COL].astype(str)
+
+    # Canonical river_name for dashboard / filters (CSV column or inferred from SUNGAI / station_code)
+    river_src = _find_first_column(df, ("river_name", "River Name", "River"))
+    if river_src:
+        df["river_name"] = df[river_src].astype(str).str.strip()
+    else:
+        from backend.services.river_mapping import infer_river_name
+
+        sung_col = _find_first_column(df, ("SUNGAI", "Sungai", "sungai"))
+        if sung_col:
+            df["river_name"] = [
+                infer_river_name(sc, sn, sungai=sg)
+                for sc, sn, sg in zip(df[STATION_COL], df["station_name"], df[sung_col])
+            ]
+        else:
+            df["river_name"] = [
+                infer_river_name(sc, sn)
+                for sc, sn in zip(df[STATION_COL], df["station_name"])
+            ]
 
     return df
 

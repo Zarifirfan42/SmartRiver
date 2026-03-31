@@ -9,8 +9,12 @@ from typing import Optional
 import os
 
 from backend.db.repository import status_from_wqi
+from backend.services.river_mapping import RIVER_NAME_BY_STATION_CODE
 
 ROOT = Path(__file__).resolve().parents[2]
+
+# Backward-compatible alias — single source of truth is backend.services.river_mapping.
+STATION_CODE_TO_NAME = RIVER_NAME_BY_STATION_CODE
 
 # Default dataset paths.
 # IMPORTANT: user request — use `sample_water_quality.csv` by default.
@@ -19,15 +23,6 @@ DEFAULT_SAMPLE_CSV = ROOT / "datasets" / "sample_water_quality.csv"
 DEFAULT_DATASET_PATHS = [
     DEFAULT_SAMPLE_CSV,
 ]
-
-# Map station codes to display names for CSVs that have no Station Name (e.g. sample_water_quality.csv).
-STATION_CODE_TO_NAME = {
-    "S01": "Sungai Klang",
-    "S02": "Sungai Gombak",
-    "S03": "Sungai Pinang",
-    "S04": "Sungai Kulim",
-    "S05": "Sungai Perak",
-}
 
 # Historical data cutoff: only dates up to and including this year are treated as real measurements.
 # Dates in the forecast horizon are NOT used as observations; they are generated as forecast predictions only.
@@ -227,6 +222,8 @@ def load_dataset_dataframe(path: Path):
 
 def dataframe_to_readings(df) -> list[dict]:
     """Convert DataFrame to list of reading dicts. All values from dataset only."""
+    from backend.services.river_mapping import river_name_for_station
+
     if df is None or df.empty:
         return []
 
@@ -246,14 +243,29 @@ def dataframe_to_readings(df) -> list[dict]:
                     date_val = str(date_val)[:10]
         else:
             date_val = ""
-        # Use full station name from dataset (e.g. Sungai Pinang, Sungai Klang)
-        station_name = str(row.get("station_name", row.get("Station Name", ""))).strip() or "Unknown"
-        station_code = station_name  # use same for API compatibility
+        # Prefer explicit station_code column when present (DOE-style S01..); else fall back to name.
+        raw_code = row.get("station_code")
+        if raw_code is not None and str(raw_code).strip() != "":
+            station_code = str(raw_code).strip()
+        else:
+            station_code = ""
+        station_name = str(row.get("station_name", row.get("Station Name", ""))).strip()
+        if not station_name and station_code:
+            ck = station_code.strip().upper()
+            station_name = STATION_CODE_TO_NAME.get(ck, station_code)
+        if not station_code and station_name:
+            station_code = station_name  # legacy rows without codes
+        if not station_code:
+            station_code = "S01"
+        if not station_name:
+            station_name = "Unknown"
         wqi = float(row.get("WQI", row.get("wqi", 0)) or 0)
         status = status_from_wqi(wqi)
+        rn = river_name_for_station(station_code, station_name)
         readings.append({
             "station_code": station_code,
             "station_name": station_name,
+            "river_name": rn,
             "date": date_val,
             "wqi": wqi,
             "river_status": status,
@@ -268,14 +280,39 @@ def get_station_coordinates(station_code: str, index: int) -> tuple[float, float
     use its real coordinates. Otherwise use the default area + offset by index
     so markers don't overlap.
     """
+    from backend.services.river_mapping import river_name_for_station
+
     name = station_code or ""
-    # Station codes in readings use full station names (dataframe_to_readings sets station_code = station_name).
     if name in STATION_COORDINATES:
         return STATION_COORDINATES[name]
+    rn = river_name_for_station(name, None)
+    if rn in STATION_COORDINATES:
+        return STATION_COORDINATES[rn]
 
     base_lat, base_lon = DEFAULT_MAP_CENTER
     off = STATION_OFFSETS[index % len(STATION_OFFSETS)]
     return (base_lat + off[0], base_lon + off[1])
+
+
+def _dedupe_one_csv_per_river(paths: list[Path]) -> list[Path]:
+    """
+    Keep only one per-river CSV by filename (e.g. one `Sungai Kulim.csv`).
+    If duplicates exist across folders, keep the larger file.
+    """
+    selected: dict[str, Path] = {}
+    for p in paths:
+        key = p.stem.strip().lower() or p.name.strip().lower()
+        current = selected.get(key)
+        if current is None:
+            selected[key] = p
+            continue
+        try:
+            keep_new = p.stat().st_size > current.stat().st_size
+        except OSError:
+            keep_new = False
+        if keep_new:
+            selected[key] = p
+    return sorted(selected.values())
 
 
 def load_default_dataset() -> Optional[object]:
@@ -285,7 +322,36 @@ def load_default_dataset() -> Optional[object]:
     """
     datasets_dir = ROOT / "datasets"
 
-    # Candidate order: always start with sample_water_quality.csv (if present).
+    # First preference: any CSVs under datasets/by_river/**.csv (per-river exports).
+    by_river_dir = datasets_dir / "by_river"
+    if by_river_dir.exists():
+        csvs: list[Path] = [p for p in by_river_dir.rglob("*.csv") if p.is_file()]
+        csvs = _dedupe_one_csv_per_river(csvs)
+        if csvs:
+            frames = []
+            last_err: Optional[str] = None
+            for p in csvs:
+                try:
+                    df = load_dataset_dataframe(p)
+                    if df is not None and not df.empty:
+                        frames.append(df)
+                except Exception as e:
+                    last_err = str(e)
+                    print(f"Dataset loader: failed reading per-river file {p.name}: {e}")
+                    continue
+            if frames:
+                import pandas as pd
+
+                combined = pd.concat(frames, ignore_index=True)
+                if _is_dataframe_quality_ok(combined):
+                    print(f"Dataset loader: selected per-river datasets from {by_river_dir} with combined shape={combined.shape}")
+                    return combined
+                else:
+                    print("Dataset loader: per-river datasets failed quality checks; falling back to root datasets.")
+            elif last_err:
+                print(f"Dataset loader: per-river datasets present but all failed to load. Last error: {last_err}")
+
+    # Candidate order (fallback): always start with sample_water_quality.csv (if present).
     candidates: list[Path] = []
     for p in DEFAULT_DATASET_PATHS:
         if p.exists():
@@ -337,6 +403,41 @@ def load_default_dataset() -> Optional[object]:
 
     print(f"Dataset loader: all candidate datasets failed. Last error: {last_err}")
     return None
+
+
+def reload_default_readings_from_disk() -> dict:
+    """
+    Rebuild in-memory historical readings from current CSVs (by_river + defaults).
+    Used after admin deletes a filesystem dataset so the dashboard matches disk.
+    Does not rerun forecast/alerts (call run_startup_data_load on startup for full refresh).
+    """
+    from backend.db.repository import save_readings
+
+    df = load_default_dataset()
+    if df is None or df.empty:
+        from backend.db.repository import _store
+        _store["readings"].clear()
+        return {"ok": True, "readings_count": 0, "message": "No default dataset on disk"}
+
+    if "date" in df.columns:
+        try:
+            years = df["date"].astype(str).str[:4].astype(int)
+            df = df[years <= HISTORICAL_CUTOFF_YEAR].copy()
+        except (ValueError, TypeError):
+            pass
+    if df.empty:
+        from backend.db.repository import _store
+        _store["readings"].clear()
+        return {"ok": True, "readings_count": 0, "message": "No historical rows after year filter"}
+
+    readings = dataframe_to_readings(df)
+    if not readings:
+        from backend.db.repository import _store
+        _store["readings"].clear()
+        return {"ok": True, "readings_count": 0, "message": "No readings parsed"}
+
+    save_readings(1, readings)
+    return {"ok": True, "readings_count": len(readings), "message": "Readings refreshed from disk"}
 
 
 def run_startup_data_load():
@@ -405,10 +506,13 @@ def run_startup_data_load():
                 continue
             status_label = "Slightly Polluted" if status == "slightly_polluted" else "Polluted"
             severity = "warning" if status == "slightly_polluted" else "critical"
-            msg = f"{name} water quality is {status_label} (WQI: {wqi:.1f}) on {date_str}."
+            sc = latest.get("station_code") or name
+            sn = latest.get("station_name") or name
+            rn = latest.get("river_name") or sn
+            msg = f"{rn}: {sn} water quality is {status_label} (WQI: {wqi:.1f}) on {date_str}."
             save_alert(
-                station_code=name,
-                station_name=name,
+                station_code=sc,
+                station_name=sn,
                 message=msg,
                 severity=severity,
                 wqi=wqi,

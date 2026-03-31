@@ -20,15 +20,16 @@ from fastapi import APIRouter, UploadFile, File, HTTPException, Query, Depends
 
 from backend.auth.dependencies import require_admin
 from backend.db.repository import get_summary, save_dataset
+from backend.services.river_mapping import dataset_upload_metadata_from_csv
 
 router = APIRouter()
-ROOT = Path(__file__).resolve().parents[3]
+ROOT = Path(__file__).resolve().parents[2]
 
 
 @router.get("/dashboard-summary")
-def dashboard_summary_alias():
-    """Alias for dashboard summary."""
-    return get_summary()
+def dashboard_summary_alias(river_name: str = Query(None)):
+    """Alias for dashboard summary. Optional river_name filters KPIs to one river."""
+    return get_summary(river_name=river_name)
 
 
 @router.post("/upload-dataset")
@@ -48,16 +49,33 @@ async def upload_dataset_alias(
         file_path = str(rel)
     except ValueError:
         file_path = str(path)
+
+    meta = dataset_upload_metadata_from_csv(content)
+    if meta.get("reject"):
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error": "upload_rejected",
+                "message": meta.get("reject_detail"),
+                "warnings": meta.get("warnings", []),
+            },
+        )
+
     row = save_dataset(
         name=file.filename,
         file_path=file_path,
         file_size=len(content),
         row_count=0,
         uploaded_by=current_user["id"],
+        river_name=meta.get("river_name"),
+        station_codes_seen=meta.get("station_codes_seen") or [],
+        river_validation_warnings=meta.get("warnings") or [],
     )
     return {
         "success": True,
         "dataset": row,
+        "river_name": row.get("river_name"),
+        "warnings": meta.get("warnings", []),
         "message": "Upload saved.",
     }
 

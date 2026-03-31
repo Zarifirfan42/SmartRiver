@@ -40,7 +40,8 @@ function formatStatus(s) {
 
 export default function PollutionForecastPage() {
   const [stations, setStations] = useState([])
-  const [station, setStation] = useState('')
+  /** Canonical river name; scopes historical series + forecast points. */
+  const [river, setRiver] = useState('')
   const [selectedMonthRange, setSelectedMonthRange] = useState(1)
   const [selectedYear, setSelectedYear] = useState(2027)
   const [historical, setHistorical] = useState([])
@@ -57,7 +58,8 @@ export default function PollutionForecastPage() {
         const list = await dashboardApi.getStations()
         if (!cancelled && Array.isArray(list) && list.length > 0) {
           setStations(list)
-          setStation((s) => s || list[0].station_name || list[0].station_code)
+          const rivers = dashboardApi.uniqueRiverNamesFromStations(list)
+          setRiver((r) => r || rivers[0] || '')
         }
       } catch (e) {
         if (!cancelled) setError(e.message || 'Failed to load stations')
@@ -70,14 +72,13 @@ export default function PollutionForecastPage() {
   }, [])
 
   useEffect(() => {
-    if (!station) return
     let cancelled = false
     setLoading(true)
     setError(null)
     Promise.all([
-      dashboardApi.getTimeSeries({ station_name: station, limit: 2000 }),
+      dashboardApi.getTimeSeries({ river_name: river || undefined, limit: 2000 }),
       dashboardApi.getForecast({
-        station_code: station,
+        river_name: river || undefined,
         year_from: selectedYear,
         year_to: selectedYear,
         limit: 5000,
@@ -100,11 +101,12 @@ export default function PollutionForecastPage() {
       })
       .finally(() => { if (!cancelled) setLoading(false) })
     return () => { cancelled = true }
-  }, [station, selectedYear])
+  }, [river, selectedYear])
 
   const predictionTableRows = forecast.map((f) => ({
     date: f.date || '—',
-    stationName: f.station_name || f.station_code || station || '—',
+    riverName: f.river_name || f.station_name || '—',
+    stationName: f.station_name || f.station_code || '—',
     predictedWqi: f.wqi != null ? Number(f.wqi) : null,
     predictedStatus: f.river_status ? formatStatus(f.river_status) : (f.wqi >= 81 ? 'Clean' : f.wqi >= 60 ? 'Slightly Polluted' : 'Polluted'),
   }))
@@ -130,18 +132,16 @@ export default function PollutionForecastPage() {
 
       <div className="flex flex-wrap gap-4">
         <div>
-          <label className="label">Station name</label>
+          <label className="label">River</label>
           <select
-            value={station}
-            onChange={(e) => setStation(e.target.value)}
-            className="input-field w-auto min-w-[200px]"
+            value={river}
+            onChange={(e) => setRiver(e.target.value)}
+            className="input-field w-auto min-w-[220px]"
             disabled={loading || stations.length === 0}
           >
-            {stations.length === 0 && <option value="">No stations</option>}
-            {stations.map((s) => (
-              <option key={s.station_code} value={s.station_name || s.station_code}>
-                {s.station_name || s.station_code}
-              </option>
+            <option value="">All rivers</option>
+            {dashboardApi.uniqueRiverNamesFromStations(stations).map((rn) => (
+              <option key={rn} value={rn}>{rn}</option>
             ))}
           </select>
         </div>
@@ -225,25 +225,27 @@ export default function PollutionForecastPage() {
       <div className="card">
         <h2 className="font-display font-semibold text-surface-800 mb-4">Forecast table</h2>
         <p className="text-sm text-surface-500 mb-4">
-          Date, Station Name, Predicted WQI, Predicted River Status (WQI ≥81 Clean, 60-80 Slightly Polluted, &lt;60 Polluted).
+          Date, River, Station, predicted WQI, and status (WQI ≥81 Clean, 60-80 Slightly Polluted, &lt;60 Polluted).
         </p>
         <div className="overflow-x-auto rounded-lg border border-surface-200">
           <table className="w-full text-sm">
             <thead>
               <tr className="bg-surface-100 text-left">
                 <th className="px-4 py-2 font-medium text-surface-700">Date</th>
-                <th className="px-4 py-2 font-medium text-surface-700">Station name</th>
+                <th className="px-4 py-2 font-medium text-surface-700">River</th>
+                <th className="px-4 py-2 font-medium text-surface-700">Station</th>
                 <th className="px-4 py-2 font-medium text-surface-700">Predicted WQI</th>
                 <th className="px-4 py-2 font-medium text-surface-700">Predicted river status</th>
               </tr>
             </thead>
             <tbody>
               {predictionTableRows.length === 0 ? (
-                <tr><td colSpan={4} className="px-4 py-8 text-center text-surface-500">No forecast data. Ensure backend has run forecast (2025-2028) on startup.</td></tr>
+                <tr><td colSpan={5} className="px-4 py-8 text-center text-surface-500">No forecast data. Ensure backend has run forecast (2025-2028) on startup.</td></tr>
               ) : (
                 predictionTableRows.map((row, i) => (
                   <tr key={i} className="border-t border-surface-100">
                     <td className="px-4 py-2 text-surface-800">{row.date}</td>
+                    <td className="px-4 py-2 text-surface-800">{row.riverName}</td>
                     <td className="px-4 py-2 font-medium text-surface-800">{row.stationName}</td>
                     <td className="px-4 py-2">{row.predictedWqi != null ? Number(row.predictedWqi).toFixed(1) : '—'}</td>
                     <td className="px-4 py-2">{row.predictedStatus}</td>

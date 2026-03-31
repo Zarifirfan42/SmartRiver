@@ -118,10 +118,22 @@ def train(
     y_pred = scaler.inverse_transform(y_pred_scaled.reshape(-1, horizon)).reshape(y_pred_scaled.shape)
     y_true = scaler.inverse_transform(y_test.reshape(-1, horizon)).reshape(y_test.shape)
 
-    rmse = float(np.sqrt(np.mean((y_true - y_pred) ** 2)))
-    mae = float(np.mean(np.abs(y_true - y_pred)))
+    yt = y_true.flatten()
+    yp = y_pred.flatten()
+    mse = float(np.mean((yt - yp) ** 2))
+    rmse = float(np.sqrt(mse))
+    mae = float(np.mean(np.abs(yt - yp)))
+    # R² on all predicted points (multi-step); can be negative if predictions are poor.
+    ss_res = float(np.sum((yt - yp) ** 2))
+    ss_tot = float(np.sum((yt - np.mean(yt)) ** 2))
+    r2 = float(1.0 - ss_res / ss_tot) if ss_tot > 1e-12 else 0.0
 
-    metrics = {"rmse": rmse, "mae": mae}
+    metrics = {
+        "mse": mse,
+        "rmse": rmse,
+        "mae": mae,
+        "r2": r2,
+    }
 
     # Keep training loss for transparent model reporting in UI.
     history_dict = history.history if hasattr(history, "history") else {}

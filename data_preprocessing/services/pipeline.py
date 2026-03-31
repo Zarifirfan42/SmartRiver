@@ -172,6 +172,57 @@ def feature_engineering(
     return out, scaler
 
 
+def ingest_many_csv(paths: list[str | Path]) -> pd.DataFrame:
+    """Load and concatenate multiple CSVs with the same ingest rules as ``ingest_csv``."""
+    if not paths:
+        raise ValueError("ingest_many_csv: no paths provided")
+    frames = [ingest_csv(Path(p)) for p in paths]
+    return pd.concat(frames, ignore_index=True)
+
+
+def _pipeline_after_ingest(
+    df: pd.DataFrame,
+    missing_strategy: Literal["mean", "median", "drop"],
+    remove_duplicates: bool,
+    rolling_window: int,
+    lag_days: tuple,
+    normalize: bool,
+) -> pd.DataFrame:
+    df = clean_data(df, remove_duplicates=remove_duplicates)
+    df = impute_missing(df, strategy=missing_strategy)
+    df = add_wqi(df)
+    df, _ = feature_engineering(df, rolling_window=rolling_window, lag_days=list(lag_days), normalize=normalize)
+    return df
+
+
+def run_pipeline_multi(
+    input_paths: list[str | Path],
+    output_path: Optional[str | Path] = None,
+    missing_strategy: Literal["mean", "median", "drop"] = "median",
+    remove_duplicates: bool = True,
+    rolling_window: int = 7,
+    lag_days: tuple = (1, 7, 14),
+    normalize: bool = True,
+) -> pd.DataFrame:
+    """
+    Full pipeline over several CSV files (e.g. ``datasets/by_river/**/*.csv``).
+    Ingests each file, concatenates, then shared clean → impute → WQI → features.
+    """
+    df = ingest_many_csv(list(input_paths))
+    df = _pipeline_after_ingest(
+        df,
+        missing_strategy=missing_strategy,
+        remove_duplicates=remove_duplicates,
+        rolling_window=rolling_window,
+        lag_days=lag_days,
+        normalize=normalize,
+    )
+    if output_path:
+        Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+        df.to_csv(output_path, index=False)
+    return df
+
+
 def run_pipeline(
     input_path: str | Path,
     output_path: Optional[str | Path] = None,
@@ -186,10 +237,14 @@ def run_pipeline(
     Optionally saves result to output_path CSV.
     """
     df = ingest_csv(input_path)
-    df = clean_data(df, remove_duplicates=remove_duplicates)
-    df = impute_missing(df, strategy=missing_strategy)
-    df = add_wqi(df)
-    df, _ = feature_engineering(df, rolling_window=rolling_window, lag_days=list(lag_days), normalize=normalize)
+    df = _pipeline_after_ingest(
+        df,
+        missing_strategy=missing_strategy,
+        remove_duplicates=remove_duplicates,
+        rolling_window=rolling_window,
+        lag_days=lag_days,
+        normalize=normalize,
+    )
 
     if output_path:
         Path(output_path).parent.mkdir(parents=True, exist_ok=True)

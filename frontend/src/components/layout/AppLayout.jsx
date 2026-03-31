@@ -1,6 +1,8 @@
 import { NavLink, Outlet, useNavigate } from 'react-router-dom'
+import { useEffect, useState } from 'react'
 import { useAuth } from '../../context/AuthContext'
 import ReportIssueButton from '../feedback/ReportIssueButton'
+import * as feedbackApi from '../../api/feedback'
 
 const navPublic = [
   { to: '/dashboard', label: 'Dashboard', icon: '📊' },
@@ -11,11 +13,34 @@ const navPublic = [
 const navAdmin = [
   { to: '/anomaly-detection', label: 'Anomaly Detection', icon: '⚠️' },
   { to: '/upload', label: 'Dataset Upload', icon: '📤' },
+  { to: '/feedback-reports', label: 'Issue Reports', icon: '📝' },
 ]
 
 export default function AppLayout() {
   const { user, logout, isAdmin } = useAuth()
   const navigate = useNavigate()
+  const [issueCount, setIssueCount] = useState(0)
+
+  useEffect(() => {
+    if (!isAdmin) return
+    let cancelled = false
+
+    const load = async () => {
+      try {
+        const list = await feedbackApi.getFeedbackReports()
+        if (!cancelled) setIssueCount(Array.isArray(list) ? list.length : 0)
+      } catch {
+        if (!cancelled) setIssueCount(0)
+      }
+    }
+
+    load()
+    const timer = setInterval(load, 30000)
+    return () => {
+      cancelled = true
+      clearInterval(timer)
+    }
+  }, [isAdmin])
 
   const handleLogout = () => {
     logout()
@@ -50,7 +75,14 @@ export default function AppLayout() {
               }
             >
               <span>{icon}</span>
-              {label}
+              <span className="flex items-center gap-2">
+                <span>{label}</span>
+                {to === '/feedback-reports' && issueCount > 0 && (
+                  <span className="inline-flex min-w-[1.25rem] items-center justify-center rounded-full bg-amber-100 px-1.5 py-0.5 text-[11px] font-semibold text-amber-800">
+                    {issueCount}
+                  </span>
+                )}
+              </span>
             </NavLink>
           ))}
         </nav>

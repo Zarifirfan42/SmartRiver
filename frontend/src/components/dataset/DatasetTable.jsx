@@ -21,13 +21,27 @@ const DATA_TYPE_OPTIONS = [
   { value: 'forecast', label: 'Forecast (after today)' },
 ]
 
-export default function DatasetTable({ title = 'Dataset table', description = 'Station Name, Date, WQI, River Status. Filter and sort from dataset.', onDataChange, onQueryChange }) {
+/**
+ * @param {{ syncedRiverName?: string }} props When set, river filter is controlled (e.g. dashboard-wide selector); table skips its own river dropdown.
+ */
+export default function DatasetTable({
+  title = 'Dataset table',
+  description = 'River, station, date, WQI, and status. Filter and sort from dataset.',
+  onDataChange,
+  onQueryChange,
+  syncedRiverName,
+}) {
   const [stations, setStations] = useState([])
   const [years, setYears] = useState([])
   const [data, setData] = useState([])
   const [total, setTotal] = useState(0)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
+
+  /** River entity filter (canonical name, e.g. Sungai Klang). Empty = all rivers. */
+  const [riverName, setRiverName] = useState('')
+  const effectiveRiver =
+    syncedRiverName !== undefined && syncedRiverName !== null ? syncedRiverName : riverName
 
   const [stationName, setStationName] = useState('')
   const [dateFrom, setDateFrom] = useState('')
@@ -76,6 +90,7 @@ export default function DatasetTable({ title = 'Dataset table', description = 'S
     // Build query without sending "undefined"/empty-string values.
     // This prevents backend filters from accidentally excluding all rows.
     const query = { sort_by: sortOption.sort_by, sort_order: sortOption.sort_order }
+    if (effectiveRiver) query.river_name = effectiveRiver
     if (stationName) query.station_name = stationName
     if (effectiveDateFrom) query.date_from = effectiveDateFrom
     if (effectiveDateTo) query.date_to = effectiveDateTo
@@ -96,6 +111,7 @@ export default function DatasetTable({ title = 'Dataset table', description = 'S
     }
 
     const countParams = {}
+    if (query.river_name) countParams.river_name = query.river_name
     if (query.station_name) countParams.station_name = query.station_name
     if (query.date_from) countParams.date_from = query.date_from
     if (query.date_to) countParams.date_to = query.date_to
@@ -193,10 +209,25 @@ export default function DatasetTable({ title = 'Dataset table', description = 'S
         </div>
       </div>
 
-      {/* Filters */}
+      {/* Filters — river is the primary user-facing scope; optional fine station filter */}
       <div className="flex flex-wrap gap-4 mb-4">
+        {syncedRiverName === undefined && (
+          <div>
+            <label className="label">River</label>
+            <select
+              value={riverName}
+              onChange={(e) => { setRiverName(e.target.value); setPage(1) }}
+              className="input-field w-auto min-w-[200px]"
+            >
+              <option value="">All rivers</option>
+              {dashboardApi.uniqueRiverNamesFromStations(stations).map((rn) => (
+                <option key={rn} value={rn}>{rn}</option>
+              ))}
+            </select>
+          </div>
+        )}
         <div>
-          <label className="label">Station name</label>
+          <label className="label">Station (optional)</label>
           <select
             value={stationName}
             onChange={(e) => { setStationName(e.target.value); setPage(1) }}
@@ -315,7 +346,8 @@ export default function DatasetTable({ title = 'Dataset table', description = 'S
         <table className="w-full text-sm">
           <thead>
             <tr className="bg-surface-100 text-left">
-              <th className="px-4 py-2 font-medium text-surface-700">Station Name</th>
+              <th className="px-4 py-2 font-medium text-surface-700">River</th>
+              <th className="px-4 py-2 font-medium text-surface-700">Station</th>
               <th className="px-4 py-2 font-medium text-surface-700">Date</th>
               <th className="px-4 py-2 font-medium text-surface-700">WQI</th>
               <th className="px-4 py-2 font-medium text-surface-700">Status</th>
@@ -323,16 +355,17 @@ export default function DatasetTable({ title = 'Dataset table', description = 'S
           </thead>
           <tbody>
             {loading ? (
-              <tr><td colSpan={4} className="px-4 py-8 text-center text-surface-500">Loading…</td></tr>
+              <tr><td colSpan={5} className="px-4 py-8 text-center text-surface-500">Loading…</td></tr>
             ) : data.length === 0 ? (
-              <tr><td colSpan={4} className="px-4 py-8 text-center text-surface-500">No data available for selected filters.</td></tr>
+              <tr><td colSpan={5} className="px-4 py-8 text-center text-surface-500">No data available for selected filters.</td></tr>
             ) : (
               data.map((r, i) => (
                 <tr
                   key={`${r.station_name}-${r.date}-${i}`}
                   className={`border-t border-surface-100 transition-colors ${rowStatusClass(r.river_status)}`}
                 >
-                  <td className="px-4 py-2 font-medium text-surface-800">{r.station_name || '—'}</td>
+                  <td className="px-4 py-2 font-medium text-surface-800">{r.river_name || '—'}</td>
+                  <td className="px-4 py-2 text-surface-800">{r.station_name || r.station_code || '—'}</td>
                   <td className="px-4 py-2 text-surface-800">{r.date || '—'}</td>
                   <td className="px-4 py-2">{r.wqi != null ? Number(r.wqi).toFixed(1) : '—'}</td>
                   <td className="px-4 py-2">

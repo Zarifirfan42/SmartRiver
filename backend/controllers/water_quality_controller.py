@@ -5,7 +5,7 @@ Serves dashboard: summary, time-series, stations from repository.
 from pathlib import Path
 
 from fastapi import APIRouter, Query
-from backend.db.repository import get_summary, get_time_series, get_stations
+from backend.db.repository import get_summary, get_time_series, get_stations, get_latest_forecast
 
 router = APIRouter()
 
@@ -73,7 +73,7 @@ def get_water_quality():
 
             readings.append(
                 {
-                    "station_code": station_name,
+                    "station_code": code or station_name,
                     "station_name": station_name,
                     "date": date_val,
                     "wqi": wqi,
@@ -105,7 +105,9 @@ def get_water_quality():
             wqf = None
         items.append(
             {
+                "station_code": r.get("station_code"),
                 "station_name": r.get("station_name") or r.get("station_code"),
+                "river_name": r.get("river_name"),
                 "date": r.get("reading_date"),
                 "wqi": wqf,
                 "status": status_from_wqi(wqf or 0),
@@ -116,25 +118,35 @@ def get_water_quality():
 
 
 @router.get("/summary")
-def get_dashboard_summary():
+def get_dashboard_summary(river_name: str = Query(None)):
     """Dashboard summary: total stations, avg WQI, clean/polluted counts."""
-    return get_summary()
+    return get_summary(river_name=river_name)
 
 
 @router.get("/time-series")
 def get_wqi_time_series(
     station_code: str = Query(None),
+    river_name: str = Query(None),
     limit: int = Query(100, ge=1, le=500),
 ):
     """WQI time series for charts."""
-    return {"series": get_time_series(station_code=station_code, limit=limit)}
+    return {
+        "series": get_time_series(
+            station_code=station_code,
+            station_name=station_code,
+            river_name=river_name,
+            limit=limit,
+        )
+    }
 
 
 @router.get("/forecast")
-def get_forecast(limit: int = Query(30, ge=1, le=100)):
+def get_forecast(
+    river_name: str = Query(None),
+    limit: int = Query(30, ge=1, le=100),
+):
     """Latest forecast from prediction_logs."""
-    from backend.db.repository import get_latest_forecast
-    return {"forecast": get_latest_forecast(limit=limit)}
+    return {"forecast": get_latest_forecast(river_name=river_name, limit=limit)}
 
 
 @router.get("/stations")

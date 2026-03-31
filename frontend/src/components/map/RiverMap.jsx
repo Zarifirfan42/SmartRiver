@@ -37,8 +37,16 @@ function StationMarkers({ stations, onStationClick }) {
     >
       <Popup>
         <div className="min-w-[180px] text-sm">
-          <p className="font-semibold text-surface-900 border-b border-surface-200 pb-1.5 mb-2">
-            Station name
+          {s.river_name && (
+            <>
+              <p className="font-semibold text-surface-900 border-b border-surface-200 pb-1.5 mb-2">
+                River
+              </p>
+              <p className="text-surface-800">{s.river_name}</p>
+            </>
+          )}
+          <p className="font-semibold text-surface-900 border-b border-surface-200 pb-1.5 mt-3 mb-2">
+            Station
           </p>
           <p className="text-surface-800">{s.station_name || s.station_code || '—'}</p>
           <p className="font-semibold text-surface-900 border-b border-surface-200 pb-1.5 mt-3 mb-2">

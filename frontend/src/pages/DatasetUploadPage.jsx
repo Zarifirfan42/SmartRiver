@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import {
   Chart as ChartJS,
   CategoryScale,
@@ -8,45 +8,104 @@ import {
   Tooltip,
 } from 'chart.js'
 import { Bar } from 'react-chartjs-2'
+import * as datasetsApi from '../api/datasets'
 
 ChartJS.register(CategoryScale, LinearScale, BarElement, Title, Tooltip)
 
-const mockDatasets = [
-  { id: 1, name: 'DOE Klang 2024', size: '2.4 MB', rows: 12500, created: '2025-02-01' },
-  { id: 2, name: 'DOE National Q1 2024', size: '8.1 MB', rows: 42000, created: '2025-01-15' },
-]
-
 export default function DatasetUploadPage() {
   const [file, setFile] = useState(null)
-  const [name, setName] = useState('')
   const [uploading, setUploading] = useState(false)
   const [success, setSuccess] = useState(false)
-  const [datasets] = useState(mockDatasets)
+  const [error, setError] = useState(null)
+  const [datasets, setDatasets] = useState([])
+  const [deletingId, setDeletingId] = useState(null)
+  const [trainingSummary, setTrainingSummary] = useState(null)
 
-  const totalRows = datasets.reduce((s, d) => s + (d.rows || 0), 0)
+  const loadList = useCallback(async () => {
+    setError(null)
+    try {
+      const res = await datasetsApi.listDatasets()
+      const items = res?.items || res?.data?.items || []
+      setDatasets(Array.isArray(items) ? items : [])
+    } catch (e) {
+      setDatasets([])
+      setError(e.response?.data?.detail || e.message || 'Failed to list datasets')
+    }
+  }, [])
+
+  useEffect(() => {
+    loadList()
+  }, [loadList])
+
+  const totalRows = datasets.reduce((s, d) => s + (Number(d.row_count) || 0), 0)
+  const sortedDatasets = datasets
+    .slice()
+    .sort((a, b) => {
+      const ai = Number.isFinite(Number(a.id)) ? Number(a.id) : -1
+      const bi = Number.isFinite(Number(b.id)) ? Number(b.id) : -1
+      if (bi !== ai) return bi - ai
+      const as = String(a.name || '')
+      const bs = String(b.name || '')
+      return as.localeCompare(bs)
+    })
 
   const handleSubmit = async (e) => {
     e.preventDefault()
     if (!file) return
     setUploading(true)
     setSuccess(false)
+    setTrainingSummary(null)
+    setError(null)
     try {
-      // TODO: call API POST /datasets/upload
-      await new Promise((r) => setTimeout(r, 1500))
+      const up = await datasetsApi.uploadDataset(file)
+      if (up.error) {
+        setError(typeof up.error === 'string' ? up.error : JSON.stringify(up))
+        return
+      }
+      const id = up.dataset_id
+      await datasetsApi.runPreprocessing(file, id)
       setSuccess(true)
       setFile(null)
-      setName('')
+      await loadList()
+    } catch (err) {
+      const d = err.response?.data?.detail
+      setError(typeof d === 'string' ? d : d ? JSON.stringify(d) : err.message || 'Upload or preprocessing failed')
     } finally {
       setUploading(false)
     }
   }
 
+  const handleDeleteDataset = async (d) => {
+    const ok = window.confirm(`Delete dataset "${d.name || `Dataset ${d.id}`}"?`)
+    if (!ok) return
+    setDeletingId(d.id)
+    setError(null)
+    try {
+      if (d.source === 'uploaded') {
+        await datasetsApi.deleteDataset(d.id)
+      } else if (d.source === 'filesystem') {
+        await datasetsApi.deleteFilesystemDataset(d.file_path)
+      } else {
+        throw new Error('Unknown dataset source')
+      }
+      await loadList()
+    } catch (err) {
+      const dmsg = err.response?.data?.detail
+      setError(typeof dmsg === 'string' ? dmsg : err.message || 'Failed to delete dataset')
+    } finally {
+      setDeletingId(null)
+    }
+  }
+
   const chartData = {
-    labels: datasets.map((d) => d.name.length > 18 ? d.name.slice(0, 18) + '…' : d.name),
+    labels: datasets.map((d) => {
+      const n = d.name || d.filename || `Dataset ${d.id}`
+      return n.length > 22 ? `${n.slice(0, 22)}…` : n
+    }),
     datasets: [
       {
-        label: 'Rows',
-        data: datasets.map((d) => d.rows),
+        label: 'Rows (registered)',
+        data: datasets.map((d) => Number(d.row_count) || 0),
         backgroundColor: 'rgba(6, 182, 212, 0.7)',
         borderColor: 'rgba(6, 182, 212, 1)',
         borderWidth: 1,
@@ -58,12 +117,12 @@ export default function DatasetUploadPage() {
     responsive: true,
     maintainAspectRatio: false,
     plugins: {
-      title: { display: true, text: 'Dataset size (rows)', font: { size: 14 } },
+      title: { display: true, text: 'Dataset size (row_count from upload)', font: { size: 14 } },
       tooltip: { callbacks: { label: (ctx) => `${ctx.raw.toLocaleString()} rows` } },
     },
     scales: {
       x: { grid: { display: false }, ticks: { maxRotation: 25 } },
-      y: { min: 0, ticks: { stepSize: 5000 }, grid: { color: '#e2e8f0' } },
+      y: { min: 0, ticks: { stepSize: 500 }, grid: { color: '#e2e8f0' } },
     },
   }
 
@@ -71,10 +130,21 @@ export default function DatasetUploadPage() {
     <div className="space-y-6 animate-fade-in max-w-3xl">
       <div>
         <h1 className="font-display text-2xl font-semibold text-surface-900">Dataset upload</h1>
-        <p className="text-surface-600 mt-0.5">Upload DOE Malaysia CSV for processing (Admin)</p>
+        <p className="text-surface-600 mt-0.5">
+          Upload a CSV, then preprocessing runs automatically so readings appear on the dashboard.
+          Supported: simplified format (<code className="text-xs bg-surface-100 px-1 rounded">date</code>,{' '}
+          <code className="text-xs bg-surface-100 px-1 rounded">station_code</code>, parameters) or DOE-style exports (
+          <code className="text-xs bg-surface-100 px-1 rounded">SMP-DAT</code>,{' '}
+          <code className="text-xs bg-surface-100 px-1 rounded">ID STN BARU</code>, etc.).
+        </p>
       </div>
 
-      {/* Summary + bar chart — meaningful visualization for FYP demo */}
+      {error && (
+        <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-2 text-sm text-amber-900">
+          {String(error)}
+        </div>
+      )}
+
       <div className="card">
         <h2 className="font-display font-semibold text-surface-800 mb-4">Dataset overview</h2>
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 mb-4">
@@ -83,7 +153,7 @@ export default function DatasetUploadPage() {
             <p className="text-xl font-semibold text-surface-900">{datasets.length}</p>
           </div>
           <div className="rounded-lg border border-surface-200 bg-surface-50 px-4 py-3">
-            <p className="text-sm text-surface-500">Total rows</p>
+            <p className="text-sm text-surface-500">Total rows (upload metadata)</p>
             <p className="text-xl font-semibold text-surface-900">{totalRows.toLocaleString()}</p>
           </div>
         </div>
@@ -92,24 +162,26 @@ export default function DatasetUploadPage() {
             <Bar data={chartData} options={chartOptions} />
           </div>
         ) : (
-          <p className="text-surface-500 py-6 text-sm">No datasets yet. Upload a CSV to see statistics here.</p>
+          <p className="text-surface-500 py-6 text-sm">No datasets registered yet. Upload a CSV after signing in as admin.</p>
         )}
       </div>
 
       <form onSubmit={handleSubmit} className="card space-y-5">
         {success && (
-          <div className="rounded-lg bg-eco-50 px-3 py-2 text-sm text-eco-800">Dataset uploaded successfully.</div>
+          <div className="rounded-lg bg-eco-50 px-3 py-2 text-sm text-eco-800 space-y-1">
+            <p className="font-medium">Upload successful</p>
+            <p>Dataset is saved, readings are loaded into the dashboard, and models were trained (Random Forest + anomaly; LSTM if TensorFlow is installed).</p>
+            {trainingSummary?.error && (
+              <p className="text-amber-800">Training note: {String(trainingSummary.error)}</p>
+            )}
+            {trainingSummary?.metrics?.random_forest_classification?.accuracy != null && (
+              <p className="text-eco-900">
+                RF accuracy: {(Number(trainingSummary.metrics.random_forest_classification.accuracy) * 100).toFixed(1)}%
+                {trainingSummary.lstm_trained === false ? ' · LSTM skipped (install TensorFlow for full forecast training)' : ''}
+              </p>
+            )}
+          </div>
         )}
-        <div>
-          <label className="label">Dataset name (optional)</label>
-          <input
-            type="text"
-            value={name}
-            onChange={(e) => setName(e.target.value)}
-            className="input-field"
-            placeholder="e.g. DOE Klang 2024"
-          />
-        </div>
         <div>
           <label className="label">CSV file</label>
           <div className="mt-1 flex items-center gap-4">
@@ -120,22 +192,51 @@ export default function DatasetUploadPage() {
               className="block w-full text-sm text-surface-600 file:mr-4 file:rounded-lg file:border-0 file:bg-river-50 file:px-4 file:py-2 file:text-sm file:font-medium file:text-river-700 hover:file:bg-river-100"
             />
           </div>
-          <p className="mt-1 text-xs text-surface-500">DOE format: station, date, DO, BOD, COD, NH3-N, TSS, pH</p>
+          <p className="mt-1 text-xs text-surface-500">
+            Required for dashboard: parsable date column, station identifier (station_code or DOE ID columns), and either
+            WQI or raw parameters (DO, BOD, COD, NH3-N / AN, SS / TSS, pH). Optional: river_name column; else inferred from
+            SUNGAI or station_code mapping.
+          </p>
         </div>
         <button type="submit" disabled={!file || uploading} className="btn-primary">
-          {uploading ? 'Uploading…' : 'Upload'}
+          {uploading ? 'Uploading & preprocessing…' : 'Upload & load into dashboard'}
         </button>
       </form>
 
       <div className="card">
         <h2 className="font-display font-semibold text-surface-800 mb-3">Recent datasets</h2>
         <div className="space-y-2">
-          {datasets.map((d) => (
-            <div key={d.id} className="flex items-center justify-between rounded-lg border border-surface-200 px-4 py-3">
-              <span className="font-medium text-surface-800">{d.name}</span>
-              <span className="text-sm text-surface-500">{d.rows.toLocaleString()} rows · {d.size}</span>
-            </div>
-          ))}
+          {datasets.length === 0 ? (
+            <p className="text-sm text-surface-500">None yet.</p>
+          ) : (
+            sortedDatasets.map((d) => (
+                <div key={d.id} className="rounded-lg border border-surface-200 px-4 py-3">
+                  <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
+                    <span className="font-medium text-surface-800">{d.name || `Dataset ${d.id}`}</span>
+                    <div className="flex items-center gap-2">
+                      <span className="text-sm text-surface-500">
+                        {(Number(d.row_count) || 0).toLocaleString()} rows
+                        {d.river_name ? ` · ${d.river_name}` : ''}
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => handleDeleteDataset(d)}
+                        disabled={deletingId === d.id}
+                        className="rounded-md border border-red-200 bg-red-50 px-2 py-1 text-xs font-medium text-red-700 hover:bg-red-100 disabled:opacity-60"
+                      >
+                        {deletingId === d.id ? 'Deleting…' : 'Delete'}
+                      </button>
+                    </div>
+                  </div>
+                  <div className="mt-1 text-xs text-surface-500">
+                    <span>ID: {d.id}</span>
+                    {d.source ? <span> · Source: {d.source}</span> : null}
+                    {d.file_path ? <span> · Path: {d.file_path}</span> : null}
+                    {d.created_at ? <span> · Uploaded: {String(d.created_at).replace('T', ' ').slice(0, 19)}</span> : null}
+                  </div>
+                </div>
+              ))
+          )}
         </div>
       </div>
     </div>
