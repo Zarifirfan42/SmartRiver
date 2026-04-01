@@ -9,6 +9,7 @@ import {
 } from 'chart.js'
 import { Bar } from 'react-chartjs-2'
 import * as datasetsApi from '../api/datasets'
+import { notifyDatasetChanged } from '../constants/datasetEvents'
 
 ChartJS.register(CategoryScale, LinearScale, BarElement, Title, Tooltip)
 
@@ -67,6 +68,7 @@ export default function DatasetUploadPage() {
       setSuccess(true)
       setFile(null)
       await loadList()
+      notifyDatasetChanged({ reason: 'upload' })
     } catch (err) {
       const d = err.response?.data?.detail
       setError(typeof d === 'string' ? d : d ? JSON.stringify(d) : err.message || 'Upload or preprocessing failed')
@@ -89,6 +91,7 @@ export default function DatasetUploadPage() {
         throw new Error('Unknown dataset source')
       }
       await loadList()
+      notifyDatasetChanged({ reason: 'delete' })
     } catch (err) {
       const dmsg = err.response?.data?.detail
       setError(typeof dmsg === 'string' ? dmsg : err.message || 'Failed to delete dataset')

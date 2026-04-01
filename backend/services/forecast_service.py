@@ -24,7 +24,7 @@ def run_forecast() -> list[dict]:
     if str(ROOT) not in sys.path:
         sys.path.insert(0, str(ROOT))
 
-    from backend.db.repository import _store, save_prediction_log, save_alert, status_from_wqi
+    from backend.db.repository import _store, save_prediction_log, save_alert, status_from_wqi, _today_str
     from backend.services.river_mapping import river_name_for_station
 
     readings = list(_store.get("readings", []))
@@ -39,11 +39,16 @@ def run_forecast() -> list[dict]:
     except ImportError:
         return []
 
-    # Build training data: one row per (station, date) with WQI
+    today = _today_str()
+    # Build training data: one row per (station, date) with WQI — historical only (no future-dated CSV rows).
     rows = []
     for r in readings:
         d = r.get("reading_date") or ""
         if len(d) < 10:
+            continue
+        if d > today:
+            continue
+        if (r.get("data_type") or "historical").strip().lower() == "forecast":
             continue
         try:
             year = int(d[:4])

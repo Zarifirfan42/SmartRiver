@@ -6,6 +6,7 @@ import { useState, useEffect } from 'react'
 import RiverMap from '../components/map/RiverMap'
 import DatasetTable from '../components/dataset/DatasetTable'
 import * as dashboardApi from '../api/dashboard'
+import { SMARTRIVER_DATASET_CHANGED } from '../constants/datasetEvents'
 
 function formatStatus(s) {
   if (!s) return '—'
@@ -22,6 +23,13 @@ export default function RiverHealthPage() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
   const [selectedStation, setSelectedStation] = useState(null)
+  const [dataRevision, setDataRevision] = useState(0)
+
+  useEffect(() => {
+    const bump = () => setDataRevision((n) => n + 1)
+    window.addEventListener(SMARTRIVER_DATASET_CHANGED, bump)
+    return () => window.removeEventListener(SMARTRIVER_DATASET_CHANGED, bump)
+  }, [])
 
   useEffect(() => {
     let cancelled = false
@@ -42,7 +50,7 @@ export default function RiverHealthPage() {
     }
     load()
     return () => { cancelled = true }
-  }, [])
+  }, [dataRevision])
 
   const filteredStations =
     filter === 'all'
@@ -99,7 +107,8 @@ export default function RiverHealthPage() {
 
       <DatasetTable
         title="Dataset table"
-        description="Station Name, Date, WQI, River Status. Filter by station, date range, and river status; sort by WQI or date. All records from dataset."
+        description="Historical monitoring (to today), same slice as the dashboard overview. Switch data type to view ML forecast rows."
+        datasetRevision={dataRevision}
       />
     </div>
   )

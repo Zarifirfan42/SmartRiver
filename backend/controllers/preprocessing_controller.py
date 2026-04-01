@@ -4,6 +4,7 @@ Admin only: trigger processing.
 """
 from pathlib import Path
 from typing import Optional
+import logging
 
 import pandas as pd
 from fastapi import APIRouter, UploadFile, File, HTTPException, Depends, Query
@@ -11,6 +12,7 @@ from fastapi import APIRouter, UploadFile, File, HTTPException, Depends, Query
 from backend.auth.dependencies import require_admin
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 # Project root
 ROOT = Path(__file__).resolve().parents[3]
@@ -130,6 +132,13 @@ async def run_preprocessing(
     except Exception:
         pass
 
+    logger.info(
+        "Preprocessing complete dataset_id=%s rows=%s readings=%s user_id=%s",
+        dataset_id,
+        len(df),
+        len(readings),
+        current_user.get("id"),
+    )
     return {
         "message": "Preprocessing complete",
         "rows_processed": len(df),

@@ -123,9 +123,9 @@ def dashboard_readings_table(
     sort_order: str = Query("asc", description="'asc' or 'desc'"),
     limit: int = Query(50, ge=1, le=100000),
     offset: int = Query(0, ge=0),
-    data_type: str = Query(None, description="Filter by data_type: all, historical (date <= today), forecast (date > today)"),
+    data_type: str = Query(None, description="historical (default): in-store to today; forecast: ML predictions from logs"),
 ):
-    """Dataset table: Station Name, Date, WQI, River Status, data_type. data_type: all | historical | forecast."""
+    """Dataset table: historical rows (date ≤ today) or forecast from prediction_logs when data_type=forecast."""
     return {
         "data": get_readings_table(
             station_name=station_name,
@@ -151,7 +151,7 @@ def dashboard_readings_count(
     status: str = Query(None),
     date_from: str = Query(None),
     date_to: str = Query(None),
-    data_type: str = Query(None, description="all, historical, forecast"),
+    data_type: str = Query(None, description="historical (default) or forecast"),
 ):
     """Total count of readings/forecast matching filters (for pagination)."""
     return {

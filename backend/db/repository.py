@@ -55,6 +55,23 @@ _store = {
     "_id": {"users": 1, "datasets": 1, "readings": 1, "prediction_logs": 1, "alerts": 1, "stations": 1},
 }
 
+
+def get_clean_historical_readings() -> list[dict]:
+    """
+    Single source for in-store monitoring data used by Overview, River Health, summaries, and the
+    default dataset table: reading_date <= today, excluding rows tagged data_type=='forecast'.
+    ML forecast points stay in prediction_logs only, not here.
+    """
+    today = _today_str()
+    out: list[dict] = []
+    for r in _store["readings"]:
+        if (r.get("reading_date") or "") > today:
+            continue
+        if (r.get("data_type") or "historical").strip().lower() == "forecast":
+            continue
+        out.append(r)
+    return out
+
 _SQLITE_PATH = os.environ.get("SMARTRIVER_SQLITE_PATH") or str(
     Path(__file__).resolve().parent / "smartriver.sqlite3"
 )
@@ -517,13 +534,11 @@ def get_latest_reading_for_station(station_name_or_code: str) -> Optional[dict]:
     Used to continue simulated live from last value; never use future dates.
     """
     key = (station_name_or_code or "").strip()
-    today = _today_str()
     if not key:
         return None
     candidates = [
-        r for r in _store["readings"]
+        r for r in get_clean_historical_readings()
         if (r.get("station_name") or r.get("station_code") or "").strip() == key
-        and (r.get("reading_date") or "") <= today
     ]
     if not candidates:
         return None
@@ -598,7 +613,7 @@ def get_summary(river_name: Optional[str] = None) -> dict:
     """
     from collections import defaultdict
     today = _today_str()
-    readings = [r for r in _store["readings"] if (r.get("reading_date") or "") <= today]
+    readings = list(get_clean_historical_readings())
     if river_name and str(river_name).strip():
         readings = [r for r in readings if reading_matches_river(r, str(river_name).strip())]
     if not readings:
@@ -678,8 +693,7 @@ def get_time_series(
     limit: int = 100,
 ) -> list[dict]:
     """WQI time series for charts: only readings with reading_date <= today (historical + simulated_live)."""
-    today = _today_str()
-    readings = [r for r in _store["readings"] if (r.get("reading_date") or "") <= today]
+    readings = list(get_clean_historical_readings())
     if river_name and str(river_name).strip():
         readings = [r for r in readings if reading_matches_river(r, str(river_name).strip())]
     if station_code or station_name:
@@ -730,8 +744,7 @@ def get_wqi_data(
     limit: int = 500,
 ) -> list[dict]:
     """WQI records (reading_date <= today): Date, Station Name, WQI, River Status. Filter by station and/or year."""
-    today = _today_str()
-    readings = [r for r in _store["readings"] if (r.get("reading_date") or "") <= today]
+    readings = list(get_clean_historical_readings())
     if river_name and str(river_name).strip():
         readings = [r for r in readings if reading_matches_river(r, str(river_name).strip())]
     if station_code or station_name:
@@ -795,8 +808,7 @@ def get_readings_count(
     date_to: Optional[str] = None,
     data_type: Optional[str] = None,
 ) -> int:
-    """Total count matching filters. data_type: 'all' | 'historical' | 'forecast'. historical = date <= today, forecast = from prediction_logs date > today."""
-    today = _today_str()
+    """Total count matching filters. data_type: 'historical' (default) | 'forecast'. Historical = in-store readings to today; forecast = prediction_logs."""
     if (data_type or "").strip().lower() == "forecast":
         forecast = get_latest_forecast(
             station_code=station_name,
@@ -810,9 +822,7 @@ def get_readings_count(
         if date_to:
             forecast = [f for f in forecast if (f.get("date") or "") <= date_to[:10]]
         return len(forecast)
-    readings = list(_store["readings"])
-    if (data_type or "").strip().lower() == "historical":
-        readings = [r for r in readings if (r.get("reading_date") or "") <= today]
+    readings = list(get_clean_historical_readings())
     readings = _apply_readings_filters(
         readings,
         station_name=station_name,
@@ -871,9 +881,7 @@ def get_readings_table(
                 "data_type": "forecast",
             })
         return out
-    readings = list(_store["readings"])
-    if (data_type or "").strip().lower() == "historical":
-        readings = [r for r in readings if (r.get("reading_date") or "") <= today]
+    readings = list(get_clean_historical_readings())
     readings = _apply_readings_filters(
         readings,
         station_name=station_name,
@@ -903,9 +911,9 @@ def get_readings_table(
 
 
 def get_available_years() -> list[int]:
-    """Return distinct years from readings (from dataset)."""
+    """Return distinct years from historical readings only (date <= today), aligned with Overview."""
     years = set()
-    for r in _store["readings"]:
+    for r in get_clean_historical_readings():
         d = r.get("reading_date") or ""
         if len(d) >= 4:
             try:
@@ -916,9 +924,9 @@ def get_available_years() -> list[int]:
 
 
 def get_unique_river_names() -> list[str]:
-    """Distinct canonical river_name values from current readings (for UI dropdowns)."""
+    """Distinct river_name from historical readings only (same slice as Overview / River Health)."""
     seen: set[str] = set()
-    for r in _store["readings"]:
+    for r in get_clean_historical_readings():
         rn = (r.get("river_name") or "").strip() or river_name_for_station(r.get("station_code"), r.get("station_name"))
         if rn:
             seen.add(rn)
@@ -978,17 +986,15 @@ def get_historical_alerts(limit: int = 100, river_name: Optional[str] = None) ->
     - No severity concept; message is computed from status.
     - Sorted by date: latest first.
     """
-    today = _today_str()
-    # Latest reading per station.
+    # Latest reading per station (same historical slice as Overview).
     from collections import defaultdict
     by_station = defaultdict(list)
-    for r in _store["readings"]:
-        if (r.get("reading_date") or "") <= today:
-            if river_name and str(river_name).strip() and not reading_matches_river(r, str(river_name).strip()):
-                continue
-            key = _canonical_station_key(r)
-            if key:
-                by_station[key].append(r)
+    for r in get_clean_historical_readings():
+        if river_name and str(river_name).strip() and not reading_matches_river(r, str(river_name).strip()):
+            continue
+        key = _canonical_station_key(r)
+        if key:
+            by_station[key].append(r)
 
     latest_records: list[dict] = []
     for _, rows in by_station.items():
@@ -1120,13 +1126,10 @@ def get_latest_anomalies(
 
 
 def get_stations() -> list[dict]:
-    """Stations: latest WQI per station using only readings with reading_date <= today."""
+    """Stations: latest WQI per station using only historical readings (same slice as Overview)."""
     from collections import defaultdict
-    today = _today_str()
     by_station = defaultdict(list)
-    for r in _store["readings"]:
-        if (r.get("reading_date") or "") > today:
-            continue
+    for r in get_clean_historical_readings():
         key = _canonical_station_key(r)
         if key:
             by_station[key].append(r)

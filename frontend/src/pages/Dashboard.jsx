@@ -11,6 +11,7 @@ import WQIAnomalyChart from '../components/charts/WQIAnomalyChart'
 import RiverMap from '../components/map/RiverMap'
 import DatasetTable from '../components/dataset/DatasetTable'
 import * as dashboardApi from '../api/dashboard'
+import { SMARTRIVER_DATASET_CHANGED } from '../constants/datasetEvents'
 
 function formatStatus(s) {
   if (!s) return '—'
@@ -96,6 +97,13 @@ export default function Dashboard() {
 
   // Latest critical alert for dashboard panel
   const [latestCriticalAlert, setLatestCriticalAlert] = useState(null)
+  const [dataRevision, setDataRevision] = useState(0)
+
+  useEffect(() => {
+    const bump = () => setDataRevision((n) => n + 1)
+    window.addEventListener(SMARTRIVER_DATASET_CHANGED, bump)
+    return () => window.removeEventListener(SMARTRIVER_DATASET_CHANGED, bump)
+  }, [])
 
   useEffect(() => {
     let cancelled = false
@@ -119,7 +127,7 @@ export default function Dashboard() {
     }
     load()
     return () => { cancelled = true }
-  }, [])
+  }, [dataRevision])
 
   useEffect(() => {
     let cancelled = false
@@ -137,7 +145,7 @@ export default function Dashboard() {
       })
       .catch(() => {})
     return () => { cancelled = true }
-  }, [dashboardRiver])
+  }, [dashboardRiver, dataRevision])
 
   async function handleExportCsv() {
     try {
@@ -174,7 +182,7 @@ export default function Dashboard() {
       })
       .catch(() => { if (!cancelled) setTimeSeries([]) })
     return () => { cancelled = true }
-  }, [dashboardRiver, trendYear])
+  }, [dashboardRiver, trendYear, dataRevision])
 
   useEffect(() => {
     if (!isAdmin) return
@@ -189,7 +197,7 @@ export default function Dashboard() {
       }
     }).catch(() => { if (!cancelled) { setAnomalyTimeSeries([]); setAnomalies([]) } })
     return () => { cancelled = true }
-  }, [isAdmin, dashboardRiver])
+  }, [isAdmin, dashboardRiver, dataRevision])
 
   useEffect(() => {
     let cancelled = false
@@ -204,7 +212,7 @@ export default function Dashboard() {
       setLatestCriticalAlert(latestPolluted || latestSlightly || null)
     }).catch(() => { if (!cancelled) setLatestCriticalAlert(null) })
     return () => { cancelled = true }
-  }, [dashboardRiver])
+  }, [dashboardRiver, dataRevision])
 
   return (
     <div className="space-y-6">
@@ -341,10 +349,11 @@ export default function Dashboard() {
       <div className="mt-6">
         <DatasetTable
           title="Dataset overview"
-          description="Filtered view: river, station, date, WQI, and status. Sorting and pagination."
+          description="Historical monitoring only (to today). Use Pollution Forecast for predicted WQI."
           onDataChange={setExportData}
           onQueryChange={setExportQuery}
           syncedRiverName={dashboardRiver}
+          datasetRevision={dataRevision}
         />
       </div>
 

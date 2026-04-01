@@ -15,14 +15,14 @@ const SORT_OPTIONS = [
   { value: 'date_desc', sort_by: 'date', sort_order: 'desc', label: 'Date (latest first)' },
 ]
 
+/** Overview / River Health: default historical only. Forecast is for the Pollution Forecast workflow. */
 const DATA_TYPE_OPTIONS = [
-  { value: '', label: 'All data' },
-  { value: 'historical', label: 'Historical (up to today)' },
-  { value: 'forecast', label: 'Forecast (after today)' },
+  { value: 'historical', label: 'Historical (to today)' },
+  { value: 'forecast', label: 'Forecast (ML predictions)' },
 ]
 
 /**
- * @param {{ syncedRiverName?: string }} props When set, river filter is controlled (e.g. dashboard-wide selector); table skips its own river dropdown.
+ * @param {{ syncedRiverName?: string, datasetRevision?: number }} props When set, river filter is controlled (e.g. dashboard-wide selector); table skips its own river dropdown.
  */
 export default function DatasetTable({
   title = 'Dataset table',
@@ -30,6 +30,7 @@ export default function DatasetTable({
   onDataChange,
   onQueryChange,
   syncedRiverName,
+  datasetRevision = 0,
 }) {
   const [stations, setStations] = useState([])
   const [years, setYears] = useState([])
@@ -49,12 +50,16 @@ export default function DatasetTable({
   const [monthYear, setMonthYear] = useState('')
   const [monthFilter, setMonthFilter] = useState('')
   const [status, setStatus] = useState('')
-  const [dataType, setDataType] = useState('')
+  const [dataType, setDataType] = useState('historical')
   const [sortValue, setSortValue] = useState('date_asc')
   const [pageSize, setPageSize] = useState(10)
   const [page, setPage] = useState(1)
 
   const sortOption = SORT_OPTIONS.find((o) => o.value === sortValue) || SORT_OPTIONS[2]
+
+  useEffect(() => {
+    if (datasetRevision > 0) setPage(1)
+  }, [datasetRevision])
 
   useEffect(() => {
     let cancelled = false
@@ -155,7 +160,22 @@ export default function DatasetTable({
       })
       .finally(() => { if (!cancelled) setLoading(false) })
     return () => { cancelled = true }
-  }, [stationName, dateFrom, dateTo, monthYear, monthFilter, status, dataType, sortValue, pageSize, page])
+  }, [
+    stationName,
+    dateFrom,
+    dateTo,
+    monthYear,
+    monthFilter,
+    status,
+    dataType,
+    sortValue,
+    pageSize,
+    page,
+    effectiveRiver,
+    sortOption.sort_by,
+    sortOption.sort_order,
+    datasetRevision,
+  ])
 
   const totalPages = Math.max(1, Math.ceil(total / pageSize))
   const startRow = total === 0 ? 0 : (page - 1) * pageSize + 1

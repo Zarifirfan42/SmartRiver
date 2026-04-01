@@ -7,12 +7,14 @@ Upload scans CSV for station_code column, maps codes → river_name via RIVER_NA
 """
 from pathlib import Path
 import csv
+import logging
 
 from fastapi import APIRouter, UploadFile, File, Depends, HTTPException, Query
 
 from backend.auth.dependencies import require_admin
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 ROOT = Path(__file__).resolve().parents[2]
 
 
@@ -96,7 +98,7 @@ async def upload_dataset(
 ):
     """Upload CSV; save to datasets/uploads and register in DB. Admin only."""
     if not file.filename or not file.filename.lower().endswith(".csv"):
-        return {"error": "CSV file required"}
+        raise HTTPException(status_code=400, detail="CSV file required")
     content = await file.read()
     import pandas as pd
 
@@ -138,6 +140,13 @@ async def upload_dataset(
         station_codes_seen=meta.get("station_codes_seen") or [],
         river_validation_warnings=meta.get("warnings") or [],
     )
+    logger.info(
+        "Dataset uploaded id=%s name=%s rows=%s user_id=%s",
+        row.get("id"),
+        file.filename,
+        row_count,
+        current_user.get("id"),
+    )
     return {
         "dataset_id": row["id"],
         "filename": file.filename,
@@ -164,6 +173,14 @@ def remove_dataset(
         result = delete_dataset(int(dataset_id))
     except ValueError:
         raise HTTPException(status_code=404, detail="Dataset not found")
+    logger.info(
+        "Dataset deleted id=%s removed_readings=%s",
+        int(dataset_id),
+        result.get("removed_readings", 0),
+    )
+    from backend.services.dataset_refresh import refresh_forecast_after_readings_change
+
+    refresh_forecast_after_readings_change()
     file_path = (result.get("dataset") or {}).get("file_path")
 
     # Best effort cleanup for uploaded CSV files under datasets/uploads.
@@ -235,6 +252,11 @@ def remove_filesystem_dataset(
     else:
         refresh = reload_default_readings_from_disk()
         refresh["mode"] = "reloaded_from_disk"
+
+    from backend.services.dataset_refresh import refresh_forecast_after_readings_change
+
+    refresh_forecast_after_readings_change()
+    logger.info("Filesystem dataset removed path=%s refresh=%s", rel, refresh.get("mode"))
 
     return {
         "success": True,

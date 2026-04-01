@@ -7,6 +7,7 @@
 import { useState, useEffect } from 'react'
 import ForecastChart from '../components/charts/ForecastChart'
 import * as dashboardApi from '../api/dashboard'
+import { SMARTRIVER_DATASET_CHANGED } from '../constants/datasetEvents'
 
 const MONTH_RANGE_OPTIONS = [
   { value: 1, label: '1 month (Jan)' },
@@ -50,6 +51,13 @@ export default function PollutionForecastPage() {
   const [showHistorical, setShowHistorical] = useState(true)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
+  const [dataRevision, setDataRevision] = useState(0)
+
+  useEffect(() => {
+    const bump = () => setDataRevision((n) => n + 1)
+    window.addEventListener(SMARTRIVER_DATASET_CHANGED, bump)
+    return () => window.removeEventListener(SMARTRIVER_DATASET_CHANGED, bump)
+  }, [])
 
   useEffect(() => {
     let cancelled = false
@@ -69,7 +77,7 @@ export default function PollutionForecastPage() {
     }
     load()
     return () => { cancelled = true }
-  }, [])
+  }, [dataRevision])
 
   useEffect(() => {
     let cancelled = false
@@ -101,7 +109,7 @@ export default function PollutionForecastPage() {
       })
       .finally(() => { if (!cancelled) setLoading(false) })
     return () => { cancelled = true }
-  }, [river, selectedYear])
+  }, [river, selectedYear, dataRevision])
 
   const predictionTableRows = forecast.map((f) => ({
     date: f.date || '—',
