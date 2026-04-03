@@ -17,8 +17,17 @@ from fastapi.responses import RedirectResponse
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """On startup: seed default admin, load default dataset, run anomaly if model exists."""
+    _api_port = os.environ.get("SMARTRIVER_API_PORT", "8000")
+    print("✅ Backend running on http://localhost:" + _api_port + " (start with: uvicorn ... --port " + _api_port + ")")
+    try:
+        from backend.db.repository import verify_auth_database_connection
+
+        verify_auth_database_connection()
+    except Exception as e:
+        print("❌ Database startup check failed:", e)
     try:
         from backend.db.repository import seed_default_admin
+
         admin = seed_default_admin()
         if admin:
             print("Default admin created: admin@smartriver.com")
@@ -55,10 +64,11 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+# CORS: allow_origins=["*"] with allow_credentials=True is invalid in browsers — use * + False for Bearer-token APIs.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"],
-    allow_credentials=True,
+    allow_origins=["*"],
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -121,4 +131,10 @@ def redirect_dashboard():
 
 @app.get("/health")
 def health():
+    return {"status": "ok"}
+
+
+@app.get("/api/health")
+def api_health():
+    """Health check under /api so Vite proxy /api → backend can verify connectivity."""
     return {"status": "ok"}

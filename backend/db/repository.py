@@ -97,6 +97,18 @@ def _sqlite_conn() -> sqlite3.Connection:
     return conn
 
 
+def verify_auth_database_connection() -> str:
+    """
+    Open SQLite and ping. Call once at API startup.
+    Returns resolved DB path for logging.
+    """
+    path = str(Path(_SQLITE_PATH).resolve())
+    with _sqlite_conn() as conn:
+        conn.execute("SELECT 1").fetchone()
+    print(f"✅ Database connected (SQLite): {path}")
+    return path
+
+
 def _ensure_sqlite_schema() -> None:
     with _sqlite_conn() as conn:
         conn.execute(

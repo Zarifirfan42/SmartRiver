@@ -21,14 +21,28 @@ export default function LoginPage() {
       const from = location.state?.from?.pathname || '/dashboard'
       navigate(from, { replace: true })
     } catch (err) {
-      const isNetworkError = !err.response && (err.code === 'ERR_NETWORK' || err.message === 'Network Error')
+      const isNetworkError =
+        !err.response &&
+        (err.code === 'ERR_NETWORK' || err.code === 'ECONNABORTED' || err.message === 'Network Error')
       const is404 = err.response?.status === 404
+      const is503 = err.response?.status === 503
+      const raw = err.response?.data?.detail
+      const detail =
+        typeof raw === 'string'
+          ? raw
+          : Array.isArray(raw)
+            ? raw.map((x) => (typeof x?.msg === 'string' ? x.msg : JSON.stringify(x))).join(' ')
+            : raw != null
+              ? JSON.stringify(raw)
+              : err.message || 'Login failed'
       setError(
         is404
           ? 'Login service unavailable. Make sure the backend is running (see HOW_TO_RUN.md), then try again.'
           : isNetworkError
             ? 'Cannot connect to the server. Start the backend first (see HOW_TO_RUN.md): run "python -m uvicorn backend.app.main:app --reload --port 8000" from the project root.'
-            : (err.response?.data?.detail || err.message || 'Login failed')
+            : is503
+              ? 'Server is busy or the auth database failed to open. Restart the backend and try again.'
+              : detail
       )
     } finally {
       setLoading(false)

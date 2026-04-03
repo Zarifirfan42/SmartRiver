@@ -46,3 +46,8 @@ logs/
 # Local databases
 *.sqlite
 *.sqlite3
+*.sqlite3-shm
+*.sqlite3-wal
+
+# Local validation scratch output
+validate_out*.txt

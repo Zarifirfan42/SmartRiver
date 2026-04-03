@@ -1,17 +1,25 @@
 """
 Auth controller — Login, register, and current user (JWT).
 """
+import logging
+import sqlite3
 from fastapi import APIRouter, HTTPException, status, Depends
 from pydantic import BaseModel, EmailStr
-import sqlite3
 
 from backend.auth.auth_service import (
     hash_password,
     verify_password,
     create_access_token,
 )
-from backend.auth.dependencies import get_current_user, require_user
+from backend.auth.dependencies import (
+    get_current_user,
+    require_user,
+    public_user_from_row,
+    user_row_is_active,
+)
 from backend.db.repository import get_user_by_email, create_user, update_user_password_by_email
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -40,15 +48,16 @@ class UserResponse(BaseModel):
     role: str
 
 
-@router.post("/login")
-def login(body: LoginRequest):
-    """
-    Authenticate with email and password. Returns JWT and user info.
-    """
+def _login_handler(body: LoginRequest) -> dict:
+    print(
+        "📥 Login request received:",
+        {"email": (body.email or "").strip(), "password_provided": bool(body.password)},
+    )
     email = (body.email or "").strip().lower()
     if not email or not body.password:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Email and password required")
 
+    print("🔍 Checking user in DB:", email)
     try:
         user = get_user_by_email(email)
     except sqlite3.Error:
@@ -56,38 +65,75 @@ def login(body: LoginRequest):
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Authentication database is temporarily unavailable. Please try again.",
         )
+    except Exception:
+        logger.exception("login: get_user_by_email failed")
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Authentication database is temporarily unavailable. Please try again.",
+        )
     if not user:
+        print("🔍 User lookup result: not found")
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid email or password")
-    if not user.get("is_active", True):
+
+    print("🔍 User lookup result: found id=", user.get("id"))
+    if not user_row_is_active(user):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Account disabled")
 
+    password_hash = user.get("password_hash")
+    if not password_hash or not isinstance(password_hash, (str, bytes)):
+        logger.error("login: user %s has missing or invalid password_hash", email)
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid email or password")
+
+    if isinstance(password_hash, bytes):
+        try:
+            password_hash = password_hash.decode("utf-8")
+        except Exception:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid email or password")
+
     try:
-        ok = verify_password(body.password, user["password_hash"])
-    except Exception:
-        # Prevent internal hashing errors from leaking as 500 to users.
+        ok = verify_password(body.password, password_hash)
+        print("🔐 Password verify completed:", ok)
+    except Exception as pe:
+        print("❌ LOGIN ERROR (password verify):", str(pe))
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid email or password")
     if not ok:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid email or password")
 
+    safe = public_user_from_row(user)
     try:
         token = create_access_token(
-            data={"sub": str(user["id"]), "email": user.get("email"), "role": user.get("role", "public")}
+            data={"sub": str(safe["id"]), "email": safe.get("email"), "role": safe["role"]}
         )
     except Exception:
+        logger.exception("login: create_access_token failed")
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Authentication service is temporarily unavailable. Please try again.",
         )
+    print("✅ Login success for:", safe.get("email"))
     return {
         "access_token": token,
         "token_type": "bearer",
-        "user": {
-            "id": user["id"],
-            "email": user.get("email"),
-            "full_name": user.get("full_name"),
-            "role": user.get("role", "public"),
-        },
+        "user": safe,
     }
+
+
+@router.post("/login")
+def login(body: LoginRequest):
+    """
+    Authenticate with email and password. Returns JWT and user info.
+    """
+    try:
+        return _login_handler(body)
+    except HTTPException:
+        raise
+    except Exception as e:
+        print("❌ LOGIN ERROR:", str(e))
+        logger.exception("login: unexpected error")
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Authentication temporarily unavailable. Please try again.",
+        )
 
 
 @router.post("/register")
@@ -118,11 +164,13 @@ def register(body: RegisterRequest):
             detail="Authentication database is temporarily unavailable. Please try again.",
         )
 
+    safe = public_user_from_row(user)
     try:
         token = create_access_token(
-            data={"sub": str(user["id"]), "email": user.get("email"), "role": user.get("role", "public")}
+            data={"sub": str(safe["id"]), "email": safe.get("email"), "role": safe["role"]}
         )
     except Exception:
+        logger.exception("register: create_access_token failed")
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Authentication service is temporarily unavailable. Please try again.",
@@ -130,19 +178,26 @@ def register(body: RegisterRequest):
     return {
         "access_token": token,
         "token_type": "bearer",
-        "user": {
-            "id": user["id"],
-            "email": user.get("email"),
-            "full_name": user.get("full_name"),
-            "role": user.get("role", "public"),
-        },
+        "user": safe,
     }
 
 
 @router.get("/me", response_model=UserResponse)
 def get_me(user: dict = Depends(require_user)):
     """Return current user from JWT. 401 if not authenticated."""
-    return user
+    try:
+        return UserResponse(
+            id=int(user["id"]),
+            email=user.get("email"),
+            full_name=user.get("full_name"),
+            role=str(user.get("role") or "public"),
+        )
+    except Exception:
+        logger.exception("get_me: response build failed for user_id=%s", user.get("id"))
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Could not load user profile. Please sign in again.",
+        )
 
 
 @router.post("/reset-password")

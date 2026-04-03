@@ -14,6 +14,7 @@ const resolvedBase = baseURL.startsWith('http')
 
 export const api = axios.create({
   baseURL: resolvedBase,
+  timeout: 30000,
   headers: { 'Content-Type': 'application/json' },
 })
 

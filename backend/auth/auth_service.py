@@ -4,7 +4,7 @@ Uses python-jose for JWT and passlib (bcrypt) for passwords.
 """
 import os
 from typing import Optional, Any
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from passlib.context import CryptContext
 from jose import jwt, JWTError
@@ -34,9 +34,11 @@ def create_access_token(
     expires_delta: Optional[timedelta] = None,
 ) -> str:
     """Create JWT access token. data should include 'sub' (user id) and optionally 'email', 'role'."""
-    to_encode = data.copy()
-    expire = datetime.utcnow() + (expires_delta or timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES))
-    to_encode.update({"exp": expire})
+    # Drop None values — some jose/JSON paths reject null claims and can raise during encode.
+    to_encode = {k: v for k, v in data.items() if v is not None}
+    expire_dt = datetime.now(timezone.utc) + (expires_delta or timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES))
+    # python-jose expects numeric exp (Unix seconds); datetime can cause encode/decode issues.
+    to_encode["exp"] = int(expire_dt.timestamp())
     return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
 
 

@@ -37,12 +37,20 @@ export function AuthProvider({ children }) {
   }, [])
 
   const login = useCallback(async (email, password) => {
-    const res = await api.post('/auth/login', { email, password })
-    const { access_token, user: u } = res.data
-    localStorage.setItem('smartriver_token', access_token)
-    localStorage.setItem('smartriver_user', JSON.stringify(u))
-    setUser(u)
-    return u
+    const payload = { email, password }
+    console.log('📤 Sending login request', { email, password: password ? '[redacted]' : '' })
+    try {
+      const res = await api.post('/auth/login', payload)
+      const { access_token, user: u } = res.data
+      localStorage.setItem('smartriver_token', access_token)
+      localStorage.setItem('smartriver_user', JSON.stringify(u))
+      setUser(u)
+      console.log('✅ Login response OK', { userId: u?.id, email: u?.email })
+      return u
+    } catch (error) {
+      console.error('❌ Login error:', error.response?.data ?? error.message, error.code ?? '')
+      throw error
+    }
   }, [])
 
   const register = useCallback(async (email, password, fullName) => {
