@@ -234,6 +234,19 @@ def save_dataset(
     return row
 
 
+def find_uploaded_dataset_id_by_filename(name: str) -> Optional[int]:
+    """Return latest SQLite id for an upload with the same filename (case-insensitive), or None."""
+    norm = (name or "").strip().lower()
+    if not norm:
+        return None
+    with _sqlite_conn() as conn:
+        row = conn.execute(
+            "SELECT id FROM uploaded_datasets WHERE lower(name) = ? ORDER BY id DESC LIMIT 1",
+            (norm,),
+        ).fetchone()
+    return int(row["id"]) if row else None
+
+
 def list_uploaded_datasets(limit: int = 2000) -> list[dict]:
     """Persistent dataset metadata list, newest first."""
     lim = max(1, min(int(limit), 5000))
@@ -619,15 +632,17 @@ def save_alert(
 
 def get_summary(river_name: Optional[str] = None) -> dict:
     """
-    Dashboard summary using LATEST record per station only (reading_date <= today).
-    For each station: find latest date <= today, use that row as current monitoring record.
-    Optional river_name narrows metrics to that river (entity-centric dashboard).
+    Dashboard summary from **today's** readings only (reading_date == server today, per station).
+    For each station: among rows dated today, take the latest by (date, id); counts clean / slightly_polluted / polluted
+    from those records. If a station has no reading today it is omitted from totals (no fallback to older dates).
+    Optional river_name narrows metrics to that river.
     """
     from collections import defaultdict
     today = _today_str()
     readings = list(get_clean_historical_readings())
     if river_name and str(river_name).strip():
         readings = [r for r in readings if reading_matches_river(r, str(river_name).strip())]
+    readings = [r for r in readings if (r.get("reading_date") or "")[:10] == today]
     if not readings:
         return {
             "totalStations": 0,
@@ -1138,8 +1153,11 @@ def get_latest_anomalies(
 
 
 def get_stations() -> list[dict]:
-    """Stations: latest WQI per station using only historical readings (same slice as Overview)."""
+    """
+    Stations: WQI/status for map — prefer **today's** reading per station when present; otherwise latest historical.
+    """
     from collections import defaultdict
+    today = _today_str()
     by_station = defaultdict(list)
     for r in get_clean_historical_readings():
         key = _canonical_station_key(r)
@@ -1148,7 +1166,8 @@ def get_stations() -> list[dict]:
     out = []
     for _key, rows in by_station.items():
         rows = sorted(rows, key=lambda x: (x.get("reading_date") or "", x.get("id", 0)))
-        latest = rows[-1] if rows else {}
+        today_rows = [r for r in rows if (r.get("reading_date") or "")[:10] == today]
+        latest = today_rows[-1] if today_rows else (rows[-1] if rows else {})
         code = (latest.get("station_code") or "").strip() or _key
         name = (latest.get("station_name") or "").strip() or code
         rn = latest.get("river_name") or river_name_for_station(code, name)

@@ -8,6 +8,7 @@ from typing import Any, Optional
 import joblib
 import numpy as np
 import pandas as pd
+from sklearn.metrics import r2_score
 
 RANDOM_STATE = 42
 
@@ -51,6 +52,36 @@ def get_wqi_series(
     return out["WQI"].values.astype(np.float32)
 
 
+def _pick_default_station(df: pd.DataFrame) -> Optional[str]:
+    """Pick the station with the most rows to avoid mixed-station sequence leakage."""
+    if "station_code" not in df.columns:
+        return None
+    counts = (
+        df["station_code"]
+        .astype(str)
+        .replace("nan", np.nan)
+        .dropna()
+        .value_counts()
+    )
+    if counts.empty:
+        return None
+    return str(counts.index[0])
+
+
+def _naive_previous_timestep_forecast(X_seq: np.ndarray, horizon: int) -> np.ndarray:
+    """
+    Naive baseline: predict next steps as the previous timestep (last observed value).
+    X_seq shape: (n_samples, seq_len, 1), output shape: (n_samples, horizon)
+    """
+    if X_seq.ndim == 3:
+        last = X_seq[:, -1, 0].reshape(-1, 1)
+    elif X_seq.ndim == 2:
+        last = X_seq[:, -1].reshape(-1, 1)
+    else:
+        raise ValueError(f"Expected X_seq with 2 or 3 dims, got shape={X_seq.shape}")
+    return np.repeat(last, repeats=horizon, axis=1).astype(np.float32)
+
+
 def build_model(
     seq_len: int,
     horizon: int,
@@ -80,6 +111,7 @@ def train(
     seq_len: int = 30,
     horizon: int = 7,
     test_ratio: float = 0.2,
+    val_ratio: float = 0.1,
     epochs: int = 50,
     batch_size: int = 32,
     verbose: int = 0,
@@ -92,7 +124,8 @@ def train(
 
     from sklearn.preprocessing import MinMaxScaler
 
-    series = get_wqi_series(df, station_code=station_code)
+    selected_station = station_code or _pick_default_station(df)
+    series = get_wqi_series(df, station_code=selected_station)
     if len(series) < seq_len + horizon + 10:
         return {"error": "Insufficient data for sequence length and horizon", "model": None, "scaler": None, "metrics": {}}
 
@@ -100,18 +133,39 @@ def train(
     series_scaled = scaler.fit_transform(series.reshape(-1, 1)).flatten()
 
     X, y = build_sequences(series_scaled, seq_len, horizon)
+    # Keras LSTM expects 3D tensor: (samples, timesteps, features).
+    if X.ndim == 2:
+        X = X[..., np.newaxis]
     n = len(X)
     n_test = max(1, int(n * test_ratio))
-    X_train, X_test = X[:-n_test], X[-n_test:]
-    y_train, y_test = y[:-n_test], y[-n_test:]
+    n_train_val = n - n_test
+    if n_train_val < 5:
+        return {"error": "Insufficient windows after test split", "model": None, "scaler": None, "metrics": {}}
+    n_val = max(1, int(n_train_val * val_ratio))
+    n_train = n_train_val - n_val
+    if n_train < 3:
+        return {"error": "Insufficient windows after validation split", "model": None, "scaler": None, "metrics": {}}
+
+    # Strict chronological split: no shuffle for time series.
+    X_train, y_train = X[:n_train], y[:n_train]
+    X_val, y_val = X[n_train:n_train + n_val], y[n_train:n_train + n_val]
+    X_test, y_test = X[n_train + n_val:], y[n_train + n_val:]
 
     model = build_model(seq_len, horizon)
+    callbacks = []
+    if TF_AVAILABLE:
+        callbacks.append(
+            keras.callbacks.EarlyStopping(
+                monitor="val_loss", patience=8, restore_best_weights=True
+            )
+        )
     history = model.fit(
         X_train, y_train,
-        validation_data=(X_test, y_test),
+        validation_data=(X_val, y_val),
         epochs=epochs,
         batch_size=batch_size,
         verbose=verbose,
+        callbacks=callbacks,
     )
 
     y_pred_scaled = model.predict(X_test, verbose=0)
@@ -120,19 +174,43 @@ def train(
 
     yt = y_true.flatten()
     yp = y_pred.flatten()
+    baseline_scaled = _naive_previous_timestep_forecast(X_test, horizon=horizon)
+    y_baseline = scaler.inverse_transform(baseline_scaled.reshape(-1, horizon)).reshape(baseline_scaled.shape)
+    yb = y_baseline.flatten()
+
     mse = float(np.mean((yt - yp) ** 2))
     rmse = float(np.sqrt(mse))
     mae = float(np.mean(np.abs(yt - yp)))
-    # R² on all predicted points (multi-step); can be negative if predictions are poor.
-    ss_res = float(np.sum((yt - yp) ** 2))
-    ss_tot = float(np.sum((yt - np.mean(yt)) ** 2))
-    r2 = float(1.0 - ss_res / ss_tot) if ss_tot > 1e-12 else 0.0
+    r2 = float(r2_score(yt, yp))
+    baseline_rmse = float(np.sqrt(np.mean((yt - yb) ** 2)))
+    baseline_mae = float(np.mean(np.abs(yt - yb)))
+    rmse_improvement_pct = float(((baseline_rmse - rmse) / baseline_rmse) * 100.0) if baseline_rmse > 1e-12 else 0.0
+    mae_improvement_pct = float(((baseline_mae - mae) / baseline_mae) * 100.0) if baseline_mae > 1e-12 else 0.0
 
     metrics = {
         "mse": mse,
         "rmse": rmse,
         "mae": mae,
         "r2": r2,
+        "baseline": {
+            "strategy": "previous_timestep",
+            "rmse": baseline_rmse,
+            "mae": baseline_mae,
+        },
+        "improvement_vs_baseline_pct": {
+            "rmse": rmse_improvement_pct,
+            "mae": mae_improvement_pct,
+        },
+        "split_info": {
+            "n_sequences_total": int(n),
+            "n_train": int(len(X_train)),
+            "n_val": int(len(X_val)),
+            "n_test": int(len(X_test)),
+            "test_ratio": float(test_ratio),
+            "val_ratio_of_train_val": float(val_ratio),
+            "shuffle": False,
+            "station_code_used": selected_station,
+        },
     }
 
     # Keep training loss for transparent model reporting in UI.

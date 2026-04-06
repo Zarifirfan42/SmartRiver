@@ -84,10 +84,17 @@ def dashboard_stations():
 
 @router.get("/anomalies")
 def dashboard_anomalies(
-    station_code: str = Query(None, description="Station name for anomalies"),
+    station_code: str = Query(None, description="Station code or name to scope anomalies"),
+    river_name: str = Query(None, description="Filter anomalies to one river"),
     limit: int = Query(500, ge=1, le=2000),
 ):
-    return {"anomalies": get_latest_anomalies(station_code=station_code, limit=limit)}
+    return {
+        "anomalies": get_latest_anomalies(
+            station_code=station_code,
+            river_name=river_name,
+            limit=limit,
+        )
+    }
 
 
 @router.get("/wqi-data")

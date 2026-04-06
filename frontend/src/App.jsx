@@ -10,7 +10,6 @@ import Dashboard from './pages/Dashboard'
 import RiverHealthPage from './pages/RiverHealthPage'
 import PollutionForecastPage from './pages/PollutionForecastPage'
 import AlertMonitoringPage from './pages/AlertMonitoringPage'
-import AnomalyDetectionPage from './pages/AnomalyDetectionPage'
 import DatasetUploadPage from './pages/DatasetUploadPage'
 import FeedbackReportsPage from './pages/FeedbackReportsPage'
 
@@ -34,14 +33,6 @@ function App() {
             <Route path="river-health" element={<RiverHealthPage />} />
             <Route path="forecast" element={<PollutionForecastPage />} />
             <Route path="alerts" element={<AlertMonitoringPage />} />
-            <Route
-              path="anomaly-detection"
-              element={
-                <ProtectedRoute requireAdmin>
-                  <AnomalyDetectionPage />
-                </ProtectedRoute>
-              }
-            />
             <Route path="export" element={<Navigate to="/dashboard" replace />} />
             <Route
               path="upload"

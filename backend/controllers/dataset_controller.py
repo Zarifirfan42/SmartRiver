@@ -9,7 +9,7 @@ from pathlib import Path
 import csv
 import logging
 
-from fastapi import APIRouter, UploadFile, File, Depends, HTTPException, Query
+from fastapi import APIRouter, UploadFile, File, Depends, HTTPException, Query, BackgroundTasks
 
 from backend.auth.dependencies import require_admin
 
@@ -93,31 +93,18 @@ def list_datasets():
 
 @router.post("/upload")
 async def upload_dataset(
+    background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     current_user: dict = Depends(require_admin),
 ):
-    """Upload CSV; save to datasets/uploads and register in DB. Admin only."""
+    """Upload CSV; save to disk; register in SQLite; ingest into dashboard readings; queue ML training."""
     if not file.filename or not file.filename.lower().endswith(".csv"):
         raise HTTPException(status_code=400, detail="CSV file required")
     content = await file.read()
     import pandas as pd
 
-    path = ROOT / "datasets" / "uploads" / file.filename
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_bytes(content)
-    from backend.db.repository import save_dataset
+    from backend.db.repository import delete_dataset, find_uploaded_dataset_id_by_filename, save_dataset
     from backend.services.river_mapping import dataset_upload_metadata_from_csv
-
-    try:
-        rel = path.relative_to(ROOT)
-        file_path = str(rel)
-    except ValueError:
-        file_path = str(path)
-
-    try:
-        row_count = int(len(pd.read_csv(path)))
-    except Exception:
-        row_count = 0
 
     meta = dataset_upload_metadata_from_csv(content)
     if meta.get("reject"):
@@ -130,6 +117,30 @@ async def upload_dataset(
             },
         )
 
+    # Same filename → replace previous registration and its readings (no duplicate datasets / rows).
+    existing_id = find_uploaded_dataset_id_by_filename(file.filename)
+    if existing_id is not None:
+        try:
+            delete_dataset(int(existing_id))
+            logger.info("Replaced prior upload id=%s name=%s", existing_id, file.filename)
+        except ValueError:
+            pass
+
+    path = ROOT / "datasets" / "uploads" / file.filename
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(content)
+
+    try:
+        rel = path.relative_to(ROOT)
+        file_path = str(rel)
+    except ValueError:
+        file_path = str(path)
+
+    try:
+        row_count = int(len(pd.read_csv(path)))
+    except Exception:
+        row_count = 0
+
     row = save_dataset(
         name=file.filename,
         file_path=file_path,
@@ -140,22 +151,49 @@ async def upload_dataset(
         station_codes_seen=meta.get("station_codes_seen") or [],
         river_validation_warnings=meta.get("warnings") or [],
     )
+    dataset_id = int(row["id"])
+
+    from backend.services.upload_ingest import ingest_upload_csv_path, schedule_background_train_upload
+
+    ingest_result = ingest_upload_csv_path(path, dataset_id, run_anomaly_forecast=True)
+    if not ingest_result.get("ok"):
+        logger.error("Upload ingest failed id=%s err=%s", dataset_id, ingest_result.get("error"))
+        try:
+            delete_dataset(dataset_id)
+        except Exception:
+            pass
+        try:
+            path.unlink(missing_ok=True)
+        except Exception:
+            pass
+        raise HTTPException(
+            status_code=422,
+            detail=f"Could not load WQI readings: {ingest_result.get('error', 'unknown')}",
+        )
+
+    background_tasks.add_task(schedule_background_train_upload, file.filename)
+
     logger.info(
-        "Dataset uploaded id=%s name=%s rows=%s user_id=%s",
-        row.get("id"),
+        "Dataset uploaded+ingested id=%s name=%s rows=%s readings=%s user_id=%s",
+        dataset_id,
         file.filename,
         row_count,
+        ingest_result.get("readings_stored"),
         current_user.get("id"),
     )
     return {
-        "dataset_id": row["id"],
+        "dataset_id": dataset_id,
         "filename": file.filename,
         "size": len(content),
         "river_name": row.get("river_name"),
         "station_codes_seen": row.get("station_codes_seen"),
         "warnings": meta.get("warnings", []),
         "row_count": row_count,
-        "message": "Upload saved. Run preprocessing to load rows into the dashboard (POST /api/v1/preprocessing/run).",
+        "ingested": True,
+        "readings_stored": ingest_result.get("readings_stored"),
+        "rows_processed": ingest_result.get("rows_processed"),
+        "training_queued": True,
+        "message": "Upload saved, WQI readings loaded into the dashboard, and model training queued in the background.",
     }
 
 

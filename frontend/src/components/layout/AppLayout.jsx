@@ -11,7 +11,6 @@ const navPublic = [
   { to: '/alerts', label: 'Alert Monitoring', icon: '🔔' },
 ]
 const navAdmin = [
-  { to: '/anomaly-detection', label: 'Anomaly Detection', icon: '⚠️' },
   { to: '/upload', label: 'Dataset Upload', icon: '📤' },
   { to: '/feedback-reports', label: 'Issue Reports', icon: '📝' },
 ]

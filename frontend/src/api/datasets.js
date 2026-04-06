@@ -87,19 +87,3 @@ export async function predictForecast(horizon = 7, file = null) {
   const { data } = await api.post('/ml/predict/forecast', null, { params })
   return data
 }
-
-export async function predictAnomaly(file = null) {
-  if (file) {
-    const form = new FormData()
-    form.append('file', file)
-    const { data } = await api.post('/ml/predict/anomaly', form, {
-      headers: { 'Content-Type': 'multipart/form-data' },
-    })
-    return data
-  }
-  const form = new FormData()
-  const { data } = await api.post('/ml/predict/anomaly', form, {
-    headers: { 'Content-Type': 'multipart/form-data' },
-  })
-  return data
-}

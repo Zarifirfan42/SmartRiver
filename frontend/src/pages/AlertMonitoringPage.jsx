@@ -1,5 +1,9 @@
 import { useState, useEffect, useMemo } from 'react'
 import * as dashboardApi from '../api/dashboard'
+import {
+  countPollutedStations,
+  countSlightlyPollutedStations,
+} from '../utils/alertMonitoringWqi'
 
 function formatStatus(s) {
   if (!s) return '—'
@@ -8,6 +12,23 @@ function formatStatus(s) {
   if (v === 'slightly polluted') return 'Slightly Polluted'
   if (v === 'polluted') return 'Polluted'
   return v
+}
+
+/** Parse alert date to YYYY-MM-DD prefix when possible */
+function alertDateYmd(dateStr) {
+  if (!dateStr) return null
+  const s = String(dateStr).trim().slice(0, 10)
+  if (s.length < 10 || s[4] !== '-' || s[7] !== '-') return null
+  return s
+}
+
+/** Local calendar date as YYYY-MM-DD (matches typical backend reading_date strings). */
+function localTodayYmd() {
+  const d = new Date()
+  const y = d.getFullYear()
+  const m = String(d.getMonth() + 1).padStart(2, '0')
+  const day = String(d.getDate()).padStart(2, '0')
+  return `${y}-${m}-${day}`
 }
 
 export default function AlertMonitoringPage() {
@@ -21,6 +42,24 @@ export default function AlertMonitoringPage() {
   const [riverFilter, setRiverFilter] = useState('')
   const [statusFilter, setStatusFilter] = useState('') // '' | slightly_polluted | polluted
   const [typeFilter, setTypeFilter] = useState('all') // all | historical | forecast
+
+  /** Forecast-only filters (full forecast list, not limited to today) */
+  const [forecastStationFilter, setForecastStationFilter] = useState('')
+  const [forecastYearFilter, setForecastYearFilter] = useState('')
+  const [forecastMonthFilter, setForecastMonthFilter] = useState('') // '' or '1'..'12'
+
+  /** Re-render periodically so "today" rolls over at local midnight without a full refresh */
+  const [clockTick, setClockTick] = useState(0)
+  useEffect(() => {
+    const id = window.setInterval(() => setClockTick((t) => t + 1), 60_000)
+    return () => window.clearInterval(id)
+  }, [])
+
+  /** Today's readings for WQI summary counts (local date, optional river filter) */
+  const [todayReadings, setTodayReadings] = useState([])
+  const [todayReadingsLoading, setTodayReadingsLoading] = useState(false)
+
+  const todayYmd = localTodayYmd()
 
   useEffect(() => {
     let cancelled = false
@@ -64,26 +103,115 @@ export default function AlertMonitoringPage() {
     return () => { cancelled = true }
   }, [riverFilter])
 
+  useEffect(() => {
+    let cancelled = false
+    setTodayReadingsLoading(true)
+    dashboardApi
+      .getReadingsTable({
+        date_from: todayYmd,
+        date_to: todayYmd,
+        river_name: riverFilter || undefined,
+        limit: 10000,
+        offset: 0,
+      })
+      .then((rows) => {
+        if (!cancelled) setTodayReadings(Array.isArray(rows) ? rows : [])
+      })
+      .catch(() => {
+        if (!cancelled) setTodayReadings([])
+      })
+      .finally(() => {
+        if (!cancelled) setTodayReadingsLoading(false)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [riverFilter, todayYmd, clockTick])
+
+  const historicalToday = useMemo(() => {
+    return historicalAlerts.filter((a) => alertDateYmd(a.date) === todayYmd)
+  }, [historicalAlerts, todayYmd])
+
   const filteredHistorical = useMemo(() => {
-    const filtered = historicalAlerts.filter((a) => {
+    const filtered = historicalToday.filter((a) => {
       if (statusFilter && a.river_status !== statusFilter) return false
       return true
     })
-    return [...filtered].sort((a, b) => String(b.date || '').localeCompare(String(a.date || '')))
-  }, [historicalAlerts, statusFilter])
+    return [...filtered].sort((a, b) =>
+      String(a.station_name || a.station_code || '').localeCompare(
+        String(b.station_name || b.station_code || ''),
+      ),
+    )
+  }, [historicalToday, statusFilter])
+
+  const forecastStationOptions = useMemo(() => {
+    const map = new Map()
+    forecastAlerts.forEach((a) => {
+      const code = String(a.station_code || '').trim()
+      const name = String(a.station_name || '').trim()
+      const value = code || name
+      if (!value) return
+      const label =
+        name && code && name !== code ? `${name} (${code})` : name || code
+      if (!map.has(value)) map.set(value, label)
+    })
+    return [...map.entries()]
+      .map(([value, label]) => ({ value, label }))
+      .sort((x, y) => x.label.localeCompare(y.label))
+  }, [forecastAlerts])
+
+  const forecastYearOptions = useMemo(() => {
+    const years = new Set()
+    forecastAlerts.forEach((a) => {
+      const ymd = alertDateYmd(a.date)
+      if (ymd) years.add(ymd.slice(0, 4))
+    })
+    return [...years].sort((a, b) => b.localeCompare(a))
+  }, [forecastAlerts])
 
   const filteredForecast = useMemo(() => {
-    return forecastAlerts.filter((a) => {
+    const monthPadded =
+      forecastMonthFilter === ''
+        ? ''
+        : String(Number(forecastMonthFilter)).padStart(2, '0')
+
+    const list = forecastAlerts.filter((a) => {
       if (statusFilter && a.river_status !== statusFilter) return false
+      if (forecastStationFilter) {
+        const key = String(a.station_code || a.station_name || '').trim()
+        if (key !== forecastStationFilter) return false
+      }
+      const ymd = alertDateYmd(a.date)
+      if (forecastYearFilter && (!ymd || ymd.slice(0, 4) !== forecastYearFilter)) return false
+      if (monthPadded && (!ymd || ymd.slice(5, 7) !== monthPadded)) return false
       return true
     })
-  }, [forecastAlerts, statusFilter])
+    return [...list].sort((a, b) => String(a.date || '').localeCompare(String(b.date || '')))
+  }, [
+    forecastAlerts,
+    statusFilter,
+    forecastStationFilter,
+    forecastYearFilter,
+    forecastMonthFilter,
+  ])
 
-  const allAlerts = [...filteredHistorical, ...filteredForecast]
-  const slightlyCount = allAlerts.filter((a) => a.river_status === 'slightly_polluted').length
-  const pollutedCount = allAlerts.filter((a) => a.river_status === 'polluted').length
+  /** WQI-based counts: 60 ≤ WQI ≤ 80 vs WQI < 60 (from today’s readings). */
+  const slightlyPollutedTodayCount = useMemo(
+    () => countSlightlyPollutedStations(todayReadings),
+    [todayReadings],
+  )
+  const pollutedTodayCount = useMemo(() => countPollutedStations(todayReadings), [todayReadings])
 
-  const filtersActive = Boolean(riverFilter || statusFilter)
+  const filtersActive = Boolean(
+    riverFilter ||
+      statusFilter ||
+      forecastStationFilter ||
+      forecastYearFilter ||
+      forecastMonthFilter,
+  )
+  const forecastFiltersActive = Boolean(
+    forecastStationFilter || forecastYearFilter || forecastMonthFilter,
+  )
   const hasNoAlerts = !loading && filteredHistorical.length === 0 && filteredForecast.length === 0
 
   const showHistorical = typeFilter === 'all' || typeFilter === 'historical'
@@ -94,11 +222,15 @@ export default function AlertMonitoringPage() {
       <div>
         <h1 className="font-display text-2xl font-semibold text-surface-900">Alert monitoring</h1>
         <p className="text-surface-600 mt-0.5">
-          Alerts are generated when the latest monitoring state or forecast prediction is Slightly Polluted or Polluted.
+          <span className="font-medium text-surface-800">Monitoring (historical)</span> shows{' '}
+          <span className="font-medium text-surface-800">today only</span> — alerts dated{' '}
+          <span className="font-mono">{todayYmd}</span> (local date).{' '}
+          <span className="font-medium text-surface-800">Forecast</span> lists all future polluted predictions; use
+          station / year / month filters below that table.
         </p>
         <div className="text-sm text-surface-500 mt-2">
-          <div>Data Source: Historical, Simulated Live, Forecast</div>
-          <div>Last Updated: {new Date().toLocaleString()}</div>
+          <div>Data source: historical / simulated live (today) · forecast (full horizon)</div>
+          <div>Page time: {new Date().toLocaleString()}</div>
         </div>
       </div>
 
@@ -157,16 +289,46 @@ export default function AlertMonitoringPage() {
           </div>
         </div>
 
-        <div className="mt-4 grid grid-cols-1 sm:grid-cols-2 gap-3">
-          <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3">
-            <p className="text-sm font-medium text-amber-800">Monitor closely</p>
-            <p className="text-2xl font-bold text-amber-700 mt-1">{slightlyCount}</p>
-            <p className="text-xs text-amber-700/80 mt-1">Slightly Polluted</p>
-          </div>
-          <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3">
-            <p className="text-sm font-medium text-red-800">Immediate attention</p>
-            <p className="text-2xl font-bold text-red-700 mt-1">{pollutedCount}</p>
-            <p className="text-xs text-red-700/80 mt-1">Polluted</p>
+        <div className="mt-4 max-w-lg mx-auto">
+          <p className="text-xs text-surface-500 mb-3 text-center">
+            Today&apos;s station counts from WQI readings ({todayYmd}, respecting the river filter). Slightly polluted =
+            60–80; polluted = under 60.
+            {todayReadingsLoading ? (
+              <span className="block mt-1 text-amber-800/90">Updating counts…</span>
+            ) : null}
+          </p>
+          <div className="rounded-xl border-2 border-surface-300 bg-white px-5 py-5 shadow-md flex flex-col justify-center min-h-[200px]">
+            <p className="text-center text-[11px] font-bold tracking-[0.2em] text-surface-600 border-b border-surface-200 pb-3 mb-4">
+              WATER QUALITY ALERT (TODAY)
+            </p>
+            <div className="space-y-5">
+              <div className="rounded-lg border-l-4 border-orange-500 bg-orange-50/90 pl-3 pr-2 py-2">
+                <div className="flex items-start justify-between gap-2">
+                  <div>
+                    <p className="text-sm font-bold text-orange-900 uppercase tracking-wide">
+                      🟠 Slightly polluted
+                    </p>
+                    <p className="text-xs text-orange-800 mt-0.5 font-medium">WQI 60–80 — caution level</p>
+                  </div>
+                  <p className="text-3xl font-extrabold text-orange-600 tabular-nums shrink-0">
+                    {slightlyPollutedTodayCount}
+                  </p>
+                </div>
+              </div>
+              <div className="rounded-lg border-l-4 border-red-600 bg-red-50 pl-3 pr-2 py-2">
+                <div className="flex items-start justify-between gap-2">
+                  <div>
+                    <p className="text-sm font-bold text-red-900 uppercase tracking-wide">🔴 Polluted</p>
+                    <p className="text-xs text-red-800 mt-0.5 font-medium">WQI under 60 — immediate attention</p>
+                  </div>
+                  <p className="text-3xl font-extrabold text-red-600 tabular-nums shrink-0">{pollutedTodayCount}</p>
+                </div>
+              </div>
+            </div>
+            <p className="text-[10px] text-surface-500 text-center mt-4 pt-3 border-t border-surface-100">
+              {slightlyPollutedTodayCount + pollutedTodayCount} station
+              {slightlyPollutedTodayCount + pollutedTodayCount === 1 ? '' : 's'} in alert bands today (🟠 + 🔴)
+            </p>
           </div>
         </div>
       </div>
@@ -174,10 +336,15 @@ export default function AlertMonitoringPage() {
       {hasNoAlerts && (
         <div className="rounded-xl border border-surface-200 bg-white p-8 text-center">
           <p className="text-surface-600 font-medium">
-            {filtersActive ? 'No alerts match the selected filters.' : 'No alerts. All rivers are clean.'}
+            {filtersActive
+              ? 'No alerts match the selected filters.'
+              : `Nothing to show: no monitoring alerts for today (${todayYmd}) and no forecast pollution alerts.`}
           </p>
           {filtersActive && (
-            <p className="text-sm text-surface-500 mt-2">Try changing river or status filters.</p>
+            <p className="text-sm text-surface-500 mt-2">
+              Try changing river, status, or forecast filters (station / year / month). Monitoring stays today-only; if
+              today has no readings, that section stays empty until data exists (e.g. simulated live).
+            </p>
           )}
         </div>
       )}
@@ -185,13 +352,17 @@ export default function AlertMonitoringPage() {
       {/* Historical Alerts */}
       {showHistorical && (
         <div className="rounded-xl border border-surface-200 bg-white p-4 shadow-sm">
-          <h2 className="font-display font-semibold text-surface-800 mb-2">Historical alerts</h2>
-          <p className="text-sm text-surface-500 mb-4">From latest monitoring state per station. Sorted by date (newest first).</p>
+          <h2 className="font-display font-semibold text-surface-800 mb-2">Today&apos;s monitoring alerts</h2>
+          <p className="text-sm text-surface-500 mb-4">
+            Latest monitoring or simulated live per station, only when the alert date is today ({todayYmd}). Sorted by
+            station name.
+          </p>
           <div className="overflow-x-auto rounded-lg border border-surface-200">
             <table className="w-full text-sm">
               <thead>
                 <tr className="bg-surface-100 text-left">
-                  <th className="px-4 py-2 font-medium text-surface-700">Station name</th>
+                  <th className="px-4 py-2 font-medium text-surface-700">River</th>
+                  <th className="px-4 py-2 font-medium text-surface-700">Station</th>
                   <th className="px-4 py-2 font-medium text-surface-700">Date</th>
                   <th className="px-4 py-2 font-medium text-surface-700">WQI</th>
                   <th className="px-4 py-2 font-medium text-surface-700">Status</th>
@@ -201,10 +372,10 @@ export default function AlertMonitoringPage() {
               <tbody>
                 {!loading && filteredHistorical.length === 0 ? (
                   <tr>
-                    <td colSpan={5} className="px-4 py-8 text-center text-surface-500">
+                    <td colSpan={6} className="px-4 py-8 text-center text-surface-500">
                       {filtersActive
-                        ? 'No historical alerts match the selected filters.'
-                        : 'No historical alerts — latest reading per station is clean.'}
+                        ? 'No monitoring alerts match the selected filters for today.'
+                        : `No monitoring alerts for today (${todayYmd}) — either all stations are clean or there is no reading dated today.`}
                     </td>
                   </tr>
                 ) : (
@@ -229,7 +400,64 @@ export default function AlertMonitoringPage() {
       {showForecast && (
         <div className="rounded-xl border border-surface-200 bg-white p-4 shadow-sm">
           <h2 className="font-display font-semibold text-surface-800 mb-2">Forecast alerts</h2>
-          <p className="text-sm text-surface-500 mb-4">From future prediction points. Sorted by forecast date (earliest first).</p>
+          <p className="text-sm text-surface-500 mb-4">
+            From future prediction points. Sorted by forecast date (earliest first). Narrow with station, year, and
+            month.
+          </p>
+          <div className="flex flex-wrap items-end gap-4 mb-4 pb-4 border-b border-surface-100">
+            <div>
+              <label className="label">Forecast station</label>
+              <select
+                value={forecastStationFilter}
+                onChange={(e) => setForecastStationFilter(e.target.value)}
+                className="input-field w-auto min-w-[200px]"
+              >
+                <option value="">All stations</option>
+                {forecastStationOptions.map(({ value, label }) => (
+                  <option key={value} value={value}>
+                    {label}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label className="label">Forecast year</label>
+              <select
+                value={forecastYearFilter}
+                onChange={(e) => setForecastYearFilter(e.target.value)}
+                className="input-field w-auto min-w-[140px]"
+              >
+                <option value="">All years</option>
+                {forecastYearOptions.map((y) => (
+                  <option key={y} value={y}>
+                    {y}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label className="label">Forecast month</label>
+              <select
+                value={forecastMonthFilter}
+                onChange={(e) => setForecastMonthFilter(e.target.value)}
+                className="input-field w-auto min-w-[160px]"
+              >
+                <option value="">All months</option>
+                <option value="1">January</option>
+                <option value="2">February</option>
+                <option value="3">March</option>
+                <option value="4">April</option>
+                <option value="5">May</option>
+                <option value="6">June</option>
+                <option value="7">July</option>
+                <option value="8">August</option>
+                <option value="9">September</option>
+                <option value="10">October</option>
+                <option value="11">November</option>
+                <option value="12">December</option>
+              </select>
+            </div>
+          </div>
           <div className="overflow-x-auto rounded-lg border border-surface-200">
             <table className="w-full text-sm">
               <thead>
@@ -244,7 +472,15 @@ export default function AlertMonitoringPage() {
               </thead>
               <tbody>
                 {!loading && filteredForecast.length === 0 ? (
-                  <tr><td colSpan={6} className="px-4 py-8 text-center text-surface-500">No forecast alerts</td></tr>
+                  <tr>
+                    <td colSpan={6} className="px-4 py-8 text-center text-surface-500">
+                      {forecastAlerts.length === 0
+                        ? 'No forecast alerts.'
+                        : forecastFiltersActive
+                          ? 'No forecast alerts match the selected station, year, or month.'
+                          : 'No forecast alerts.'}
+                    </td>
+                  </tr>
                 ) : (
                   filteredForecast.map((a, i) => (
                     <tr key={`${a.station_name || a.station_code}-${a.date}-${i}`} className="border-t border-surface-100">

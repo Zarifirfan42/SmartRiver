@@ -63,15 +63,13 @@ export default function DatasetUploadPage() {
         setError(typeof up.error === 'string' ? up.error : JSON.stringify(up))
         return
       }
-      const id = up.dataset_id
-      await datasetsApi.runPreprocessing(file, id)
       setSuccess(true)
       setFile(null)
       await loadList()
       notifyDatasetChanged({ reason: 'upload' })
     } catch (err) {
       const d = err.response?.data?.detail
-      setError(typeof d === 'string' ? d : d ? JSON.stringify(d) : err.message || 'Upload or preprocessing failed')
+      setError(typeof d === 'string' ? d : d ? JSON.stringify(d) : err.message || 'Upload failed')
     } finally {
       setUploading(false)
     }
@@ -134,7 +132,7 @@ export default function DatasetUploadPage() {
       <div>
         <h1 className="font-display text-2xl font-semibold text-surface-900">Dataset upload</h1>
         <p className="text-surface-600 mt-0.5">
-          Upload a CSV, then preprocessing runs automatically so readings appear on the dashboard.
+          Upload a CSV: the server saves it, loads WQI into the dashboard, registers stations, refreshes forecast, and queues ML training. Re-uploading the same filename replaces the previous dataset (no duplicates).
           Supported: simplified format (<code className="text-xs bg-surface-100 px-1 rounded">date</code>,{' '}
           <code className="text-xs bg-surface-100 px-1 rounded">station_code</code>, parameters) or DOE-style exports (
           <code className="text-xs bg-surface-100 px-1 rounded">SMP-DAT</code>,{' '}
@@ -202,7 +200,7 @@ export default function DatasetUploadPage() {
           </p>
         </div>
         <button type="submit" disabled={!file || uploading} className="btn-primary">
-          {uploading ? 'Uploading & preprocessing…' : 'Upload & load into dashboard'}
+            {uploading ? 'Uploading & loading…' : 'Upload & load into dashboard'}
         </button>
       </form>
 

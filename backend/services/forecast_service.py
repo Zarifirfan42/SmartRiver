@@ -16,7 +16,7 @@ FORECAST_YEARS = [2026, 2027, 2028]
 
 def run_forecast() -> list[dict]:
     """
-    Train a time-series forecast model on historical WQI (readings with year <= 2025).
+    Train a time-series forecast model on historical WQI (readings dated on or before today, excluding forecast rows).
     Generate daily predictions per station for 2026, 2027, 2028.
     Saves to prediction_logs and returns the forecast list.
     """

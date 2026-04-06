@@ -74,7 +74,7 @@ export default function DashboardPage() {
       {/* Summary cards + River health indicator + WQI gauge */}
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
         <div className="card">
-          <p className="text-sm font-medium text-surface-500">Stations</p>
+          <p className="text-sm font-medium text-surface-500">Stations (with data today)</p>
           <p className="text-2xl font-display font-semibold text-surface-900">{summary.totalStations}</p>
         </div>
         <div className="card flex flex-col justify-center">
@@ -85,12 +85,19 @@ export default function DashboardPage() {
           <p className="text-sm font-medium text-surface-500 mb-2">Current WQI</p>
           <WQIGauge value={summary.latestWqi} size={120} />
         </div>
-        <div className="card">
-          <p className="text-sm font-medium text-surface-500">Status breakdown</p>
-          <div className="mt-2 space-y-1 text-sm">
+        <div className="card border-amber-100 bg-amber-50/40">
+          <p className="text-sm font-medium text-surface-700">Status (today) — focus: slightly polluted</p>
+          <div className="mt-2 space-y-2 text-sm">
             <p><span className="inline-block w-2 h-2 rounded-full bg-eco-500 mr-2" />Clean: {summary.cleanCount}</p>
-            <p><span className="inline-block w-2 h-2 rounded-full bg-amber-500 mr-2" />Slightly polluted: {summary.slightlyPollutedCount}</p>
-            <p><span className="inline-block w-2 h-2 rounded-full bg-red-500 mr-2" />Polluted: {summary.pollutedCount}</p>
+            <p className="font-medium text-amber-900">
+              <span className="inline-block w-2 h-2 rounded-full bg-amber-500 mr-2" />
+              Slightly polluted: {summary.slightlyPollutedCount}
+            </p>
+            <p className="text-surface-600">
+              <span className="inline-block w-2 h-2 rounded-full bg-red-500 mr-2 opacity-70" />
+              Polluted: {summary.pollutedCount}
+              {summary.pollutedCount === 0 ? <span className="text-surface-500"> (none)</span> : null}
+            </p>
           </div>
         </div>
       </div>

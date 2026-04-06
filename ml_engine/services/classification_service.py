@@ -9,7 +9,12 @@ import joblib
 import numpy as np
 import pandas as pd
 from sklearn.ensemble import RandomForestClassifier
-from sklearn.model_selection import train_test_split
+from sklearn.model_selection import (
+    train_test_split,
+    GroupShuffleSplit,
+    StratifiedKFold,
+    StratifiedGroupKFold,
+)
 from sklearn.metrics import (
     accuracy_score,
     f1_score,
@@ -22,12 +27,155 @@ from sklearn.metrics import (
 
 RIVER_STATUS_ORDER = ["clean", "slightly_polluted", "polluted"]
 RANDOM_STATE = 42
+SAFE_RAW_FEATURES = ["DO", "BOD", "COD", "AN", "TSS", "pH"]
+LEAKY_NAME_TOKENS = (
+    "status",
+    "label",
+    "class",
+    "target",
+    "wqi",
+    "lag",
+    "rolling",
+    "anomaly",
+    "forecast",
+    "predict",
+)
 
 
 def get_feature_columns(df: pd.DataFrame) -> list[str]:
-    """Numeric columns suitable as features (exclude target and ids)."""
-    exclude = {"river_status", "date", "station_code", "station"}
-    return [c for c in df.columns if c != "river_status" and df[c].dtype in (np.float64, np.int64, "float64", "int64") and c not in exclude]
+    """
+    Leakage-safe feature selector for river_status classification.
+    Priority: only raw water-quality parameters.
+    Fallback: numeric columns excluding any names that indicate target-derived information.
+    """
+    raw = [c for c in SAFE_RAW_FEATURES if c in df.columns]
+    if raw:
+        return raw
+
+    exclude = {"river_status", "date", "station_code", "station", "station_name", "river_name"}
+    safe_cols: list[str] = []
+    for c in df.columns:
+        c_low = c.lower()
+        if c in exclude:
+            continue
+        if any(tok in c_low for tok in LEAKY_NAME_TOKENS):
+            continue
+        if df[c].dtype in (np.float64, np.int64, "float64", "int64"):
+            safe_cols.append(c)
+    return safe_cols
+
+
+def _group_key_column(df: pd.DataFrame) -> Optional[str]:
+    """Prefer station grouping to prevent leakage between train and test."""
+    for c in ("station_code", "station_name", "river_name"):
+        if c in df.columns:
+            return c
+    return None
+
+
+def _build_group_labels(df: pd.DataFrame) -> Optional[pd.Series]:
+    col = _group_key_column(df)
+    if not col:
+        return None
+    s = df[col].astype(str).fillna("").str.strip()
+    if s.nunique(dropna=True) <= 1:
+        return None
+    return s
+
+
+def _group_aware_split_indices(
+    y_enc: np.ndarray,
+    groups: Optional[pd.Series],
+    test_size: float,
+    random_state: int,
+) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Split indices for train/test.
+    - If groups available: keep group disjoint via GroupShuffleSplit (no station leakage).
+    - Else: stratified random split.
+    """
+    idx = np.arange(len(y_enc))
+    if groups is not None:
+        gss = GroupShuffleSplit(n_splits=1, test_size=test_size, random_state=random_state)
+        train_idx, test_idx = next(gss.split(idx, y_enc, groups=groups))
+        return train_idx, test_idx
+    train_idx, test_idx = train_test_split(
+        idx, test_size=test_size, random_state=random_state, stratify=y_enc
+    )
+    return np.asarray(train_idx), np.asarray(test_idx)
+
+
+def _cross_validate_accuracy(
+    X: pd.DataFrame,
+    y_enc: np.ndarray,
+    groups: Optional[pd.Series],
+    *,
+    n_estimators: int,
+    max_depth: int,
+    min_samples_leaf: int,
+    random_state: int,
+    folds: int = 5,
+) -> dict[str, Any]:
+    """
+    Cross-validation for RF classification.
+    - No groups: StratifiedKFold (shuffled), n_splits = min(requested, min class count, 2..).
+    - With groups: StratifiedGroupKFold so the same station/river never appears in both train and
+      test within a fold. n_splits MUST NOT exceed the number of unique groups, otherwise sklearn
+      emits empty test folds (invalid).
+    """
+    n_samples = len(y_enc)
+    if n_samples < 2:
+        return {
+            "fold_accuracy": [],
+            "mean_accuracy": 0.0,
+            "std_accuracy": 0.0,
+            "n_folds": 0,
+            "n_folds_evaluated": 0,
+            "note": "insufficient samples for cross-validation",
+        }
+
+    class_counts = pd.Series(y_enc).value_counts()
+    min_class_count = int(class_counts.min()) if len(class_counts) else 0
+    n_groups = int(groups.astype(str).nunique(dropna=False)) if groups is not None else 0
+
+    if groups is not None and n_groups >= 2:
+        # Critical: StratifiedGroupKFold(n_splits=k) requires k <= n_unique_groups or some folds are empty.
+        n_splits = min(folds, n_groups)
+        if min_class_count >= 2:
+            n_splits = min(n_splits, min_class_count)
+        n_splits = max(2, n_splits)
+        n_splits = min(n_splits, n_groups)
+        cv_splitter = StratifiedGroupKFold(n_splits=n_splits, shuffle=True, random_state=random_state)
+        split_iter = cv_splitter.split(X, y_enc, groups=groups)
+    else:
+        n_splits = min(folds, min_class_count) if min_class_count >= 2 else 2
+        n_splits = max(2, min(n_splits, n_samples))
+        cv_splitter = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=random_state)
+        split_iter = cv_splitter.split(X, y_enc)
+
+    scores: list[float] = []
+    for tr, te in split_iter:
+        if len(tr) == 0 or len(te) == 0:
+            continue
+        model = RandomForestClassifier(
+            n_estimators=n_estimators,
+            max_depth=max_depth,
+            min_samples_leaf=min_samples_leaf,
+            class_weight="balanced",
+            random_state=random_state,
+        )
+        model.fit(X.iloc[tr], y_enc[tr])
+        pred = model.predict(X.iloc[te])
+        scores.append(float(accuracy_score(y_enc[te], pred)))
+
+    return {
+        "fold_accuracy": scores,
+        "mean_accuracy": float(np.mean(scores)) if scores else 0.0,
+        "std_accuracy": float(np.std(scores)) if len(scores) > 1 else 0.0,
+        "n_folds": int(n_splits),
+        "n_folds_evaluated": int(len(scores)),
+        "n_unique_groups": n_groups if groups is not None else None,
+    }
 
 
 def train(
@@ -44,8 +192,6 @@ def train(
     Returns metrics and the trained model.
     """
     feature_cols = get_feature_columns(df)
-    if not feature_cols:
-        feature_cols = [c for c in ["WQI", "DO", "BOD", "COD", "AN", "TSS", "pH"] if c in df.columns]
     if not feature_cols:
         raise ValueError("No feature columns found")
 
@@ -70,9 +216,15 @@ def train(
         )
     y_enc = pd.Categorical(y, categories=RIVER_STATUS_ORDER).codes
 
-    X_train, X_test, y_train, y_test = train_test_split(
-        X, y_enc, test_size=test_size, random_state=random_state, stratify=y_enc
+    groups = _build_group_labels(df.loc[valid].reset_index(drop=True) if not valid.all() else df.reset_index(drop=True))
+    train_idx, test_idx = _group_aware_split_indices(
+        y_enc=y_enc,
+        groups=groups,
+        test_size=test_size,
+        random_state=random_state,
     )
+    X_train, X_test = X.iloc[train_idx], X.iloc[test_idx]
+    y_train, y_test = y_enc[train_idx], y_enc[test_idx]
 
     model = RandomForestClassifier(
         n_estimators=n_estimators,
@@ -91,6 +243,17 @@ def train(
     f1_macro = f1_score(y_test, y_pred, average="macro", zero_division=0)
     cm = confusion_matrix(y_test, y_pred, labels=[0, 1, 2])
 
+    cv = _cross_validate_accuracy(
+        X=X,
+        y_enc=y_enc,
+        groups=groups,
+        n_estimators=n_estimators,
+        max_depth=max_depth,
+        min_samples_leaf=min_samples_leaf,
+        random_state=random_state,
+        folds=5,
+    )
+
     metrics = {
         "accuracy": float(accuracy),
         "f1_weighted": float(f1_weighted),
@@ -107,6 +270,14 @@ def train(
             zero_division=0,
             output_dict=True,
         ),
+        "cross_validation": cv,
+        "split_info": {
+            "test_size": float(test_size),
+            "train_rows": int(len(train_idx)),
+            "test_rows": int(len(test_idx)),
+            "group_column": _group_key_column(df) if groups is not None else None,
+            "group_disjoint": bool(groups is not None),
+        },
     }
 
     return {

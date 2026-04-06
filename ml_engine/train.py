@@ -111,12 +111,33 @@ def _print_metrics_summary(rf_metrics: dict, lstm_metrics: dict | None, an_metri
     print(f"  Recall (weighted)   : {rf_metrics.get('recall_weighted', 0):.4f}")
     print(f"  F1 (weighted)       : {rf_metrics.get('f1_weighted', 0):.4f}")
     print(f"  F1 (macro)          : {rf_metrics.get('f1_macro', 0):.4f}")
+    cv = rf_metrics.get("cross_validation") or {}
+    if cv:
+        k = cv.get("n_folds", 0)
+        ke = cv.get("n_folds_evaluated", k)
+        k_suffix = f"k={k}" if ke == k else f"k={k}, evaluated={ke}"
+        print(
+            f"  CV accuracy (mean±std): {cv.get('mean_accuracy', 0):.4f} ± {cv.get('std_accuracy', 0):.4f}"
+            f"  ({k_suffix})"
+        )
+    feat = rf_metrics.get("feature_columns") or []
+    if feat:
+        print(f"  Features used       : {feat}")
     if lstm_metrics:
         print("\n[LSTM - WQI multi-step forecast, held-out windows]")
         print(f"  MSE : {lstm_metrics.get('mse', 0):.4f}")
         print(f"  RMSE: {lstm_metrics.get('rmse', 0):.4f}")
         print(f"  MAE : {lstm_metrics.get('mae', 0):.4f}")
         print(f"  R²  : {lstm_metrics.get('r2', 0):.4f}")
+        baseline = lstm_metrics.get("baseline") or {}
+        improve = lstm_metrics.get("improvement_vs_baseline_pct") or {}
+        if baseline:
+            print(
+                f"  Baseline (prev-step) RMSE/MAE: {baseline.get('rmse', 0):.4f} / {baseline.get('mae', 0):.4f}"
+            )
+            print(
+                f"  Improvement vs baseline (%): RMSE {improve.get('rmse', 0):.2f}% | MAE {improve.get('mae', 0):.2f}%"
+            )
     else:
         print("\n[LSTM - skipped (see message above)]")
     print("\n[Isolation Forest - anomaly detection (unsupervised)]")
@@ -144,7 +165,14 @@ def run_training_from_paths(
     Train RF + LSTM + Isolation Forest from one or more CSV paths (after SmartRiver pipeline).
     Returns a JSON-serializable metrics dict (also written to ml_models/training_metrics.json when enabled).
     """
-    from data_preprocessing.services.pipeline import run_pipeline, run_pipeline_multi
+    from data_preprocessing.services.pipeline import (
+        ingest_csv,
+        ingest_many_csv,
+        clean_data,
+        impute_missing,
+        add_wqi,
+        feature_engineering,
+    )
     from ml_engine.services.classification_service import train as train_rf, save_model as save_rf
     from ml_engine.services.forecasting_service import train as train_lstm
     from ml_engine.services.anomaly_service import train as train_anom, save_model as save_anom
@@ -152,32 +180,29 @@ def run_training_from_paths(
     paths = [Path(p).resolve() for p in paths]
     if len(paths) == 1:
         print(f"Loading CSV: {paths[0]}")
-        df = run_pipeline(
-            paths[0],
-            output_path=None,
-            missing_strategy=missing_strategy,
-            remove_duplicates=True,
-            rolling_window=7,
-            lag_days=(1, 7, 14),
-            normalize=normalize,
-        )
+        df_raw = ingest_csv(paths[0])
     else:
         print(f"Loading {len(paths)} CSV files:")
         for p in paths[:12]:
             print(f"  - {_path_for_report(p)}")
         if len(paths) > 12:
             print(f"  ... and {len(paths) - 12} more")
-        df = run_pipeline_multi(
-            paths,
-            output_path=None,
-            missing_strategy=missing_strategy,
-            remove_duplicates=True,
-            rolling_window=7,
-            lag_days=(1, 7, 14),
-            normalize=normalize,
-        )
+        df_raw = ingest_many_csv(paths)
 
-    print(f"Preprocessed frame shape: {df.shape}")
+    # Shared, leakage-safe base table: clean + impute + WQI/river_status only.
+    df_base = clean_data(df_raw, remove_duplicates=True)
+    df_base = impute_missing(df_base, strategy=missing_strategy)
+    df_base = add_wqi(df_base)
+    print(f"Base frame shape (pre-feature-engineering): {df_base.shape}")
+
+    # Feature engineering/scaling are built AFTER base table and used for non-RF tasks.
+    df, _ = feature_engineering(
+        df_base,
+        rolling_window=7,
+        lag_days=[1, 7, 14],
+        normalize=normalize,
+    )
+    print(f"Engineered frame shape: {df.shape}")
 
     out_root = PROJECT_ROOT / "ml_models"
     out_root.mkdir(parents=True, exist_ok=True)
@@ -191,10 +216,11 @@ def run_training_from_paths(
         "isolation_forest": {},
     }
 
-    rf_out = train_rf(df)
+    rf_out = train_rf(df_base)
     rf_path = out_root / "random_forest" / "model.joblib"
     save_rf(rf_out["model"], rf_out["feature_columns"], rf_path)
     print(f"Saved Random Forest: {rf_path}")
+    print(f"Random Forest final feature list: {rf_out['feature_columns']}")
     rf_m = rf_out.get("metrics") or {}
     metrics_out["random_forest_classification"] = {
         "accuracy": rf_m.get("accuracy"),
@@ -204,6 +230,10 @@ def run_training_from_paths(
         "f1_macro": rf_m.get("f1_macro"),
         "labels": rf_m.get("labels"),
         "confusion_matrix": rf_m.get("confusion_matrix"),
+        "classification_report": rf_m.get("classification_report"),
+        "cross_validation": rf_m.get("cross_validation"),
+        "split_info": rf_m.get("split_info"),
+        "feature_columns": rf_out.get("feature_columns"),
     }
 
     lstm_dir = out_root / "lstm"

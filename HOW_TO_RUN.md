@@ -1,167 +1,221 @@
 # How to Run SmartRiver
 
-Quick steps to run the **frontend** (web UI) and **backend** (API). Optional: database and ML pipeline.
+Setup and run the **backend** (API), **frontend** (web UI), and optional **ML training**. Paths below use a placeholder; if your folder has spaces (e.g. `FYP 2526`), keep the quotes.
 
 ---
 
 ## Prerequisites
 
-- **Node.js** (v18+) and **npm** — for the frontend  
-- **Python 3.10+** — for the backend  
-- **PostgreSQL** (optional) — only if you enable the database later  
+| Requirement | Purpose |
+|-------------|---------|
+| **Python 3.10+** | Backend, ML training |
+| **Node.js v18+** and **npm** | Frontend |
+| **PostgreSQL** (optional) | Only if you connect the app to Postgres later |
 
----
+**Recommended:** create a Python virtual environment once at the project root so installs do not touch system Python.
 
-## 1. Run the frontend (web interface)
-
-Open a terminal and run (use **quotes** around the path if it contains spaces, e.g. `FYP 2526`):
+**Windows (PowerShell)**
 
 ```powershell
-cd "c:\Users\irfan\Downloads\FYP 2526\SmartRiver\frontend"
-npm install
-npm run dev
+cd "C:\path\to\SmartRiver"
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
 ```
 
-- The app will be at **http://localhost:3000**
-- **Default dataset:** On backend startup, the system loads `datasets/River Monitoring Dataset.xlsx` (or `.csv`) automatically. If the file is missing, sample data is used so all pages show data. No upload is required.
-- **Login and Register require the backend to be running** (see step 2). In development, the frontend proxies `/api` to the backend, so start the backend first to avoid "Network error".
-- **Login** with the default admin account to access Dataset Upload and admin features:
-  - **Email:** `admin@smartriver.com`
-  - **Password:** `admin123`
-- Or **Register** a new account (role: User). Only admins can upload datasets, manage stations, and trigger processing.
+**Linux / macOS**
+
+```bash
+cd /path/to/SmartRiver
+python3 -m venv .venv
+source .venv/bin/activate
+```
 
 ---
 
-## 2. Run the backend (API)
+## 1. Backend — setup and run
 
-Run the backend **from the project root**. Use **quotes** around paths that contain spaces. Use `python -m uvicorn` so uvicorn is found even if it’s not on your PATH.
+The API must run from the **project root** with `PYTHONPATH` set to the repo root.
 
-**Windows (PowerShell)** — use quoted path and `python -m uvicorn`:
+### Install dependencies
 
 ```powershell
-cd "c:\Users\irfan\Downloads\FYP 2526\SmartRiver"
-$env:PYTHONPATH = (Get-Location).Path
+cd "C:\path\to\SmartRiver"
+.\.venv\Scripts\Activate.ps1
 pip install -r requirements-backend-minimal.txt
+```
+
+### Run the server
+
+```powershell
+cd "C:\path\to\SmartRiver"
+$env:PYTHONPATH = (Get-Location).Path
 python -m uvicorn backend.app.main:app --reload --host 0.0.0.0 --port 8000
 ```
 
-**Windows (Command Prompt)**
+**Windows (cmd)**
 
 ```cmd
-cd "c:\Users\irfan\Downloads\FYP 2526\SmartRiver"
+cd "C:\path\to\SmartRiver"
 set PYTHONPATH=%CD%
-pip install -r requirements-backend-minimal.txt
 python -m uvicorn backend.app.main:app --reload --host 0.0.0.0 --port 8000
 ```
 
 **Linux / macOS**
 
 ```bash
-cd "/path/to/SmartRiver"
+cd /path/to/SmartRiver
 export PYTHONPATH=.
-pip install -r requirements-backend-minimal.txt
 python -m uvicorn backend.app.main:app --reload --host 0.0.0.0 --port 8000
 ```
 
-- API will be at **http://localhost:8000**
-- **Default dataset:** Place `River Monitoring Dataset.xlsx` (or `.csv`) in the `datasets/` folder. On startup, the backend loads it, populates stations and WQI data, and runs anomaly detection if the model exists. If the file is missing, sample data is used.
-- API docs (Swagger): **http://localhost:8000/docs**
-- **Use http://localhost:3000 for the app** (login, register, dashboard). If you open http://localhost:8000/login or /register by mistake, the API will redirect you to the frontend.
-- The frontend (in dev) proxies API requests to this URL; you can override with `VITE_API_URL` if needed.
+### Backend URLs
+
+| Item | URL |
+|------|-----|
+| API | http://localhost:8000 |
+| Swagger docs | http://localhost:8000/docs |
+
+### Data
+
+- Put `River Monitoring Dataset.xlsx` or a `.csv` in `datasets/` if you want your own file; otherwise the app may use bundled or sample data on startup.
+- Start the **backend before the frontend** in dev so login and API calls work (the Vite dev server proxies `/api` to port 8000 by default).
 
 ---
 
-## 3. Run both together (typical development)
+## 2. Frontend — setup and run
 
-1. **Terminal 1 — Backend** (use a venv and quoted path; run from project root)
+```powershell
+cd "C:\path\to\SmartRiver\frontend"
+npm install
+npm run dev
+```
+
+- App: **http://localhost:3000**
+- Default admin (for uploads / admin pages):
+  - **Email:** `admin@smartriver.com`
+  - **Password:** `admin123`
+
+---
+
+## 3. Run backend and frontend together (typical development)
+
+1. **Terminal 1 — Backend** (project root, venv activated)
 
    ```powershell
-   cd "c:\Users\irfan\Downloads\FYP 2526\SmartRiver"
+   cd "C:\path\to\SmartRiver"
    .\.venv\Scripts\Activate.ps1
    $env:PYTHONPATH = (Get-Location).Path
    python -m uvicorn backend.app.main:app --reload --port 8000
    ```
 
-2. **Terminal 2 — Frontend** (use quoted path)
+2. **Terminal 2 — Frontend**
 
    ```powershell
-   cd "c:\Users\irfan\Downloads\FYP 2526\SmartRiver\frontend"
-   npm install
+   cd "C:\path\to\SmartRiver\frontend"
    npm run dev
    ```
 
-3. Open **http://localhost:3000** in your browser.
+3. Open **http://localhost:3000**.
 
 ---
 
-## 4. Optional: ML pipeline (train models)
+## 4. ML training — test / train models
 
-From the **project root**:
+Train **Random Forest** (river status), **LSTM** (WQI forecast, needs TensorFlow), and **Isolation Forest** (anomaly), and write metrics to `ml_models/training_metrics.json`.
+
+### Install ML dependencies
+
+From **project root** (venv recommended):
 
 ```powershell
-cd "c:\Users\irfan\Downloads\FYP 2526\SmartRiver"
-$env:PYTHONPATH = (Get-Location).Path
+cd "C:\path\to\SmartRiver"
+.\.venv\Scripts\Activate.ps1
 pip install -r requirements-ml.txt
-python -m ml_engine.run_pipeline --no-lstm
 ```
 
-- `--no-lstm` skips the LSTM model if TensorFlow is not installed.
-- With TensorFlow: run without `--no-lstm` to train all three models (RF, LSTM, Isolation Forest).
-- This creates sample data under `datasets/` and saves models under `ml_models/`.
+### Recommended: full training + metrics JSON
 
-See **docs/ML_PIPELINE_README.md** for full ML usage.
+Uses CSVs under `datasets/` (prefers `datasets/by_river/**/*.csv` when present; otherwise the first `.csv` in `datasets/`).
+
+```powershell
+cd "C:\path\to\SmartRiver"
+$env:PYTHONPATH = (Get-Location).Path
+python -m ml_engine.train
+```
+
+**Useful options**
+
+| Flag | Meaning |
+|------|---------|
+| `--csv "FileName"` | Train on `datasets/FileName.csv` (extension optional) |
+| `--no-by-river` | Do not merge `by_river` CSVs; use a single root CSV only |
+| `--lstm-station "S01"` | Train LSTM on one `station_code` |
+| `--lstm-epochs 30` | Fewer epochs for a quicker test run |
+| `--no-normalize` | Disable MinMax scaling in preprocessing for the engineered frame |
+
+**Outputs**
+
+| Output | Location |
+|--------|----------|
+| Random Forest | `ml_models/random_forest/model.joblib` |
+| LSTM | `ml_models/lstm/model.keras` and `ml_models/lstm/scaler.joblib` |
+| Isolation Forest | `ml_models/anomaly_detection/model.joblib` |
+| Metrics (CV, confusion matrix, LSTM vs baseline, etc.) | `ml_models/training_metrics.json` |
+
+The console prints a summary, including **Random Forest feature list** (raw parameters only: `DO`, `BOD`, `COD`, `AN`, `TSS`, `pH`) and **group-aware cross-validation** accuracy. If you have fewer unique stations/rivers than requested folds, **k** is capped (e.g. **k = 3** with three groups) so no empty CV folds occur.
+
+### Alternative: sample pipeline (generates a sample CSV if none given)
+
+```powershell
+cd "C:\path\to\SmartRiver"
+$env:PYTHONPATH = (Get-Location).Path
+python -m ml_engine.run_pipeline
+```
+
+- Without TensorFlow: `python -m ml_engine.run_pipeline --no-lstm`
+
+More detail: **docs/ML_PIPELINE_README.md** (if present).
 
 ---
 
 ## 5. Optional: Database (PostgreSQL)
 
-If you later connect the backend to a database:
-
 1. Create a database (e.g. `smartriver`).
-2. Run the schema:  
-   `psql -U your_user -d smartriver -f docs/database_schema.sql`
-3. Copy `backend/.env.example` to `backend/.env` and set:
-
-   ```env
-   DATABASE_URL=postgresql://user:password@localhost:5432/smartriver
-   ```
-
-4. Uncomment the database and router code in `backend/app/main.py` when you implement it.
+2. Run: `psql -U your_user -d smartriver -f docs/database_schema.sql`
+3. Copy `backend/.env.example` to `backend/.env` and set `DATABASE_URL=postgresql://user:password@localhost:5432/smartriver`
+4. Wire DB usage in `backend/app/main.py` when you enable it.
 
 ---
 
 ## Summary
 
-| What              | Command (from project root) | URL                  |
-|-------------------|-----------------------------|----------------------|
-| Frontend          | `cd frontend && npm run dev` | http://localhost:3000 |
-| Backend           | From project root: `$env:PYTHONPATH=. ; python -m uvicorn backend.app.main:app --reload --port 8000` | http://localhost:8000 |
-| API docs          | (backend running)           | http://localhost:8000/docs |
-| ML pipeline       | `python -m ml_engine.run_pipeline --no-lstm` | — |
-
-For the UI, you only need to run **frontend** and **backend** (backend can run with the current stub endpoints).
+| What | Where to run | URL / output |
+|------|----------------|--------------|
+| Frontend | `frontend/` → `npm run dev` | http://localhost:3000 |
+| Backend | project root → `python -m uvicorn backend.app.main:app --reload --port 8000` | http://localhost:8000 |
+| API docs | (backend running) | http://localhost:8000/docs |
+| ML train | project root → `python -m ml_engine.train` | `ml_models/`, `training_metrics.json` |
 
 ---
 
 ## Troubleshooting
 
-### Backend: "No module named uvicorn" or pip error on dotenv.exe
+### Backend: "No module named uvicorn"
 
-- **Cause:** `pip install -r requirements.txt` failed (e.g. OSError when writing to `Python312\Scripts`), so uvicorn was never installed.
-- **Fix:** Use a **virtual environment** and the **minimal** requirements:
-  1. `cd "c:\Users\irfan\Downloads\FYP 2526\SmartRiver"`
-  2. `python -m venv .venv`
-  3. `.\.venv\Scripts\Activate.ps1`
-  4. `pip install -r requirements-backend-minimal.txt`
-  5. `$env:PYTHONPATH = (Get-Location).Path`
-  6. `python -m uvicorn backend.app.main:app --reload --port 8000`
+Use a venv and `pip install -r requirements-backend-minimal.txt`, then run `python -m uvicorn ...` from the project root with `PYTHONPATH` set.
+
+### Frontend: "Network error" or blank data
+
+Start the backend on port **8000** first. Hard refresh: Ctrl+Shift+R.
+
+### ML: "TensorFlow not installed" or LSTM skipped
+
+Run `pip install -r requirements-ml.txt`. On Windows, recent TensorFlow may be CPU-only; GPU on native Windows is limited for TF ≥ 2.11 (WSL2 is an option for GPU).
+
+### ML: TensorFlow / oneDNN warnings
+
+Informational. To reduce oneDNN messages: `$env:TF_ENABLE_ONEDNN_OPTS = "0"` (PowerShell) before training.
 
 ### Backend: "WARNING: Ignoring invalid distribution ~rotobuf"
 
-- A previous protobuf install left a broken folder. You can rename or remove the folder `~rotobuf` under your Python `site-packages`. Optional; the app can still run.
-
-### Frontend: blank white page
-
-- Open **Developer Tools** (F12) → **Console** tab and check for red errors.
-- Ensure the **backend** is running at **http://localhost:8000**.
-- Hard refresh: Ctrl+Shift+R.
+A broken protobuf folder under `site-packages`; you can remove or rename the `~rotobuf` folder. Often harmless.

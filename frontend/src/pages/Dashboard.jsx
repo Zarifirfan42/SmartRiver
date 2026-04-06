@@ -2,7 +2,7 @@
  * Dashboard — River monitoring: KPIs, map, dataset table, historical WQI trend, export.
  * Forecast charts live on the Pollution Forecast page only.
  */
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useMemo } from 'react'
 import { Link } from 'react-router-dom'
 import { useAuth } from '../context/AuthContext'
 import { DashboardSummary } from '../dashboard'
@@ -63,6 +63,36 @@ function exportPrint(rows) {
   w.close()
 }
 
+/** Stations available for WQI trend dropdown (scoped by selected river, if any). */
+function filterStationsForTrend(stations, riverName) {
+  const list = Array.isArray(stations) ? stations : []
+  const byKey = new Map()
+  for (const s of list) {
+    const key = (s.station_code || s.station_name || '').trim()
+    if (!key) continue
+    if (riverName && String(riverName).trim()) {
+      if ((s.river_name || '').trim() !== String(riverName).trim()) continue
+    }
+    if (!byKey.has(key)) byKey.set(key, s)
+  }
+  return [...byKey.values()].sort((a, b) =>
+    String(a.station_name || a.station_code).localeCompare(String(b.station_name || b.station_code), undefined, {
+      sensitivity: 'base',
+    })
+  )
+}
+
+function stationApiKey(s) {
+  return (s.station_code || s.station_name || '').trim()
+}
+
+function stationLabel(s) {
+  const name = (s.station_name || '').trim()
+  const code = (s.station_code || '').trim()
+  if (name && code && name !== code) return `${name} (${code})`
+  return name || code || 'Station'
+}
+
 export default function Dashboard() {
   const { isAdmin } = useAuth()
   const lastUpdated = new Date().toLocaleString()
@@ -72,6 +102,8 @@ export default function Dashboard() {
     cleanCount: 0,
     pollutedCount: 0,
     slightlyPollutedCount: 0,
+    /** YYYY-MM-DD from API — aligns critical-alert filter with summary (server calendar day). */
+    serverToday: null,
   })
   const [stations, setStations] = useState([])
   const [years, setYears] = useState([])
@@ -85,9 +117,10 @@ export default function Dashboard() {
   const [trendStation, setTrendStation] = useState('')
   const [trendYear, setTrendYear] = useState('')
   const [timeSeries, setTimeSeries] = useState([])
+  const [trendSeriesToday, setTrendSeriesToday] = useState(null)
+  const [trendRefreshTick, setTrendRefreshTick] = useState(0)
 
   // Anomaly
-  const [anomalyStation, setAnomalyStation] = useState('')
   const [anomalies, setAnomalies] = useState([])
   const [anomalyTimeSeries, setAnomalyTimeSeries] = useState([])
 
@@ -104,6 +137,29 @@ export default function Dashboard() {
     window.addEventListener(SMARTRIVER_DATASET_CHANGED, bump)
     return () => window.removeEventListener(SMARTRIVER_DATASET_CHANGED, bump)
   }, [])
+
+  /** Periodically refresh WQI time series so simulated live / new uploads show without full reload. */
+  useEffect(() => {
+    const id = setInterval(() => setTrendRefreshTick((t) => t + 1), 90_000)
+    return () => clearInterval(id)
+  }, [])
+
+  const trendStationChoices = useMemo(
+    () => filterStationsForTrend(stations, dashboardRiver),
+    [stations, dashboardRiver],
+  )
+
+  /** Default or validate trend station when river/station list changes (one station = one clear trend line). */
+  useEffect(() => {
+    if (trendStationChoices.length === 0) {
+      setTrendStation('')
+      return
+    }
+    setTrendStation((prev) => {
+      if (prev && trendStationChoices.some((s) => stationApiKey(s) === prev)) return prev
+      return stationApiKey(trendStationChoices[0])
+    })
+  }, [trendStationChoices])
 
   useEffect(() => {
     let cancelled = false
@@ -141,6 +197,7 @@ export default function Dashboard() {
           cleanCount: s.cleanCount ?? 0,
           pollutedCount: s.pollutedCount ?? 0,
           slightlyPollutedCount: s.slightlyPollutedCount ?? 0,
+          serverToday: s.today ?? null,
         })
       })
       .catch(() => {})
@@ -171,48 +228,84 @@ export default function Dashboard() {
 
   useEffect(() => {
     let cancelled = false
+    const params = {
+      river_name: dashboardRiver || undefined,
+      year: trendYear || undefined,
+      limit: 2000,
+    }
+    if (trendStation) {
+      params.station_code = trendStation
+    }
     dashboardApi
-      .getTimeSeries({
-        river_name: dashboardRiver || undefined,
-        year: trendYear || undefined,
-        limit: 1000,
-      })
+      .getTimeSeries(params)
       .then((res) => {
-        if (!cancelled) setTimeSeries(Array.isArray(res?.series) ? res.series : [])
+        if (cancelled) return
+        setTimeSeries(Array.isArray(res?.series) ? res.series : [])
+        setTrendSeriesToday(res?.today ?? null)
       })
-      .catch(() => { if (!cancelled) setTimeSeries([]) })
-    return () => { cancelled = true }
-  }, [dashboardRiver, trendYear, dataRevision])
+      .catch(() => {
+        if (!cancelled) {
+          setTimeSeries([])
+          setTrendSeriesToday(null)
+        }
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [dashboardRiver, trendYear, trendStation, dataRevision, trendRefreshTick])
 
   useEffect(() => {
     if (!isAdmin) return
     let cancelled = false
+    const tsParams = { river_name: dashboardRiver || undefined, limit: 1500 }
+    const anomParams = { river_name: dashboardRiver || undefined, limit: 500 }
+    if (trendStation) {
+      tsParams.station_code = trendStation
+      anomParams.station_code = trendStation
+    }
     Promise.all([
-      dashboardApi.getTimeSeries({ river_name: dashboardRiver || undefined, limit: 500 }),
-      dashboardApi.getAnomalies({ river_name: dashboardRiver || undefined, limit: 500 }),
-    ]).then(([tsRes, anom]) => {
-      if (!cancelled) {
-        setAnomalyTimeSeries(Array.isArray(tsRes?.series) ? tsRes.series : [])
-        setAnomalies(Array.isArray(anom) ? anom : [])
-      }
-    }).catch(() => { if (!cancelled) { setAnomalyTimeSeries([]); setAnomalies([]) } })
-    return () => { cancelled = true }
-  }, [isAdmin, dashboardRiver, dataRevision])
+      dashboardApi.getTimeSeries(tsParams),
+      dashboardApi.getAnomalies(anomParams),
+    ])
+      .then(([tsRes, anom]) => {
+        if (!cancelled) {
+          setAnomalyTimeSeries(Array.isArray(tsRes?.series) ? tsRes.series : [])
+          setAnomalies(Array.isArray(anom) ? anom : [])
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setAnomalyTimeSeries([])
+          setAnomalies([])
+        }
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [isAdmin, dashboardRiver, trendStation, dataRevision, trendRefreshTick])
 
   useEffect(() => {
     let cancelled = false
+    const today = summary.serverToday ? String(summary.serverToday).slice(0, 10) : ''
+    if (!today) {
+      setLatestCriticalAlert(null)
+      return
+    }
     dashboardApi.getAlertsByType({ limit: 200, river_name: dashboardRiver || undefined }).then(({ historical }) => {
       if (cancelled) return
-      const combined = Array.isArray(historical) ? historical : []
+      const combined = (Array.isArray(historical) ? historical : []).filter(
+        (a) => String(a.date || '').slice(0, 10) === today,
+      )
       const polluted = combined.filter((a) => (a.river_status || '').toLowerCase() === 'polluted')
       const slightly = combined.filter((a) => (a.river_status || '').toLowerCase() === 'slightly_polluted')
-      const sortDesc = (arr) => arr.sort((a, b) => (b.date || '').localeCompare(a.date || ''))
+      const sortDesc = (arr) => [...arr].sort((a, b) => (b.date || '').localeCompare(a.date || ''))
       const latestPolluted = sortDesc(polluted)[0]
       const latestSlightly = sortDesc(slightly)[0]
-      setLatestCriticalAlert(latestPolluted || latestSlightly || null)
+      // Prioritize slightly polluted for the banner — primary operational focus; polluted shown when no slight alert
+      setLatestCriticalAlert(latestSlightly || latestPolluted || null)
     }).catch(() => { if (!cancelled) setLatestCriticalAlert(null) })
     return () => { cancelled = true }
-  }, [dashboardRiver, dataRevision])
+  }, [dashboardRiver, dataRevision, summary.serverToday])
 
   return (
     <div className="space-y-6">
@@ -236,7 +329,10 @@ export default function Dashboard() {
         </p>
       </div>
       <div className="text-sm text-surface-500 mt-2">
-        <div>Data source: historical and simulated live monitoring</div>
+        <div>
+          KPIs (stations, average WQI, clean / slightly polluted / polluted counts) use{' '}
+          <span className="font-medium text-surface-700">readings dated today</span> on the server only.
+        </div>
         <div>Last Updated: {lastUpdated}</div>
       </div>
       {error && (
@@ -286,12 +382,34 @@ export default function Dashboard() {
         </dl>
       </div>
 
-      {/* Latest critical alert panel */}
+      {/* Today’s alert panel — slightly polluted first (primary); polluted when no slight */}
       {latestCriticalAlert && (
-        <div className="rounded-xl border border-red-200 bg-red-50 p-4 shadow-sm">
-          <h2 className="font-display text-base font-semibold text-red-800 mb-2">Latest critical alert</h2>
-          <p className="text-sm text-red-900">
-            <span aria-hidden>🚨</span>{' '}
+        <div
+          className={`rounded-xl border p-4 shadow-sm ${
+            (latestCriticalAlert.river_status || '').toLowerCase() === 'slightly_polluted'
+              ? 'border-amber-200 bg-amber-50'
+              : 'border-red-200 bg-red-50'
+          }`}
+        >
+          <h2
+            className={`font-display text-base font-semibold mb-2 ${
+              (latestCriticalAlert.river_status || '').toLowerCase() === 'slightly_polluted'
+                ? 'text-amber-900'
+                : 'text-red-800'
+            }`}
+          >
+            {(latestCriticalAlert.river_status || '').toLowerCase() === 'slightly_polluted'
+              ? "Today's attention — slightly polluted"
+              : "Today's critical alert — polluted"}
+          </h2>
+          <p
+            className={`text-sm ${
+              (latestCriticalAlert.river_status || '').toLowerCase() === 'slightly_polluted'
+                ? 'text-amber-950'
+                : 'text-red-900'
+            }`}
+          >
+            <span aria-hidden>{(latestCriticalAlert.river_status || '').toLowerCase() === 'slightly_polluted' ? '⚠️' : '🚨'}</span>{' '}
             {latestCriticalAlert.message && String(latestCriticalAlert.message).trim()
               ? latestCriticalAlert.message.trim()
               : `${latestCriticalAlert.station_name || latestCriticalAlert.station_code || 'Unknown'} — ${
@@ -300,7 +418,14 @@ export default function Dashboard() {
                   : 'Immediate attention required'
               }`}
           </p>
-          <Link to="/alerts" className="inline-block mt-2 text-sm font-medium text-red-700 hover:text-red-900 underline">
+          <Link
+            to="/alerts"
+            className={`inline-block mt-2 text-sm font-medium underline ${
+              (latestCriticalAlert.river_status || '').toLowerCase() === 'slightly_polluted'
+                ? 'text-amber-800 hover:text-amber-950'
+                : 'text-red-700 hover:text-red-900'
+            }`}
+          >
             View all alerts →
           </Link>
         </div>
@@ -361,13 +486,36 @@ export default function Dashboard() {
       <div className="mt-6 rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
         <h2 className="font-display font-semibold text-surface-800 mb-4">WQI trend analysis</h2>
         <p className="text-sm text-surface-500 mb-4">
-          Historical and simulated live WQI over time for the river selected above (and optional year).{' '}
+          Choose a <strong>monitoring station</strong> for one WQI line per chart (same for all users and admins).
+          Readings are historical plus simulated live through the server &quot;today&quot;; this section refreshes automatically every 90 seconds and when the dataset changes.{' '}
           <Link to="/forecast" className="font-medium text-cyan-700 hover:text-cyan-900 underline">
             Open Pollution Forecast
           </Link>
           {' '}for predicted WQI.
         </p>
-        <div className="flex flex-wrap gap-4 mb-4">
+        <div className="flex flex-wrap items-end gap-4 mb-4">
+          <div>
+            <label className="label">Station</label>
+            <select
+              value={trendStation}
+              onChange={(e) => setTrendStation(e.target.value)}
+              className="input-field w-auto min-w-[260px]"
+              disabled={trendStationChoices.length === 0}
+            >
+              {trendStationChoices.length === 0 ? (
+                <option value="">No stations for this river</option>
+              ) : (
+                trendStationChoices.map((s) => {
+                  const v = stationApiKey(s)
+                  return (
+                    <option key={v} value={v}>
+                      {stationLabel(s)}
+                    </option>
+                  )
+                })
+              )}
+            </select>
+          </div>
           <div>
             <label className="label">Year</label>
             <select
@@ -381,9 +529,30 @@ export default function Dashboard() {
               ))}
             </select>
           </div>
+          <button
+            type="button"
+            className="btn-secondary text-sm"
+            onClick={() => setTrendRefreshTick((t) => t + 1)}
+          >
+            Refresh WQI trend
+          </button>
         </div>
+        <p className="text-xs text-surface-500 mb-3">
+          {trendSeriesToday
+            ? `Series includes readings through ${trendSeriesToday} (server date).`
+            : ' '}
+        </p>
         {timeSeries.length > 0 ? (
-          <TimeSeriesChart data={timeSeries} height={320} />
+          <TimeSeriesChart
+            data={timeSeries}
+            height={320}
+            title="WQI trend"
+            subtitle={(() => {
+              const sel = trendStationChoices.find((s) => stationApiKey(s) === trendStation)
+              const lab = sel ? stationLabel(sel) : trendStation || '—'
+              return dashboardRiver ? `${lab} · ${dashboardRiver}` : lab
+            })()}
+          />
         ) : (
           <div className="h-[320px] flex items-center justify-center text-surface-500">No data for selected filters.</div>
         )}
@@ -392,7 +561,9 @@ export default function Dashboard() {
       {isAdmin && (
         <div className="mt-6 rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
           <h2 className="font-display font-semibold text-surface-800 mb-4">Anomaly Detection</h2>
-          <p className="text-sm text-surface-500 mb-4">Uses the river scope from the top of the dashboard. Anomalies are marked on the chart and listed below.</p>
+          <p className="text-sm text-surface-500 mb-4">
+            Uses the same river and <strong>station</strong> selection as WQI trend analysis above.
+          </p>
           <div className="mb-4">
             <h3 className="font-medium text-surface-700 mb-2">Anomaly Chart</h3>
             {anomalyTimeSeries.length > 0 ? (
