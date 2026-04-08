@@ -22,6 +22,12 @@ def _today_str() -> str:
     return date.today().isoformat()
 
 
+# Policy cap: forecasts and forecast-derived metrics never extend past this date (no 2027+ in UI/API).
+FORECAST_PLANNING_END = "2026-12-31"
+# Forecast table/count must load enough points before date/month filters; do not pre-truncate to page size.
+FORECAST_READINGS_QUERY_CAP = 100_000
+
+
 def status_from_wqi(wqi: float) -> str:
     """
     WQI → monitoring status (single source of truth for alerts and summaries).
@@ -632,29 +638,16 @@ def save_alert(
 
 def get_summary(river_name: Optional[str] = None) -> dict:
     """
-    Dashboard summary from **today's** readings only (reading_date == server today, per station).
-    For each station: among rows dated today, take the latest by (date, id); counts clean / slightly_polluted / polluted
-    from those records. If a station has no reading today it is omitted from totals (no fallback to older dates).
+    Dashboard summary: same **per-station** choice as the map (`get_stations`):
+    prefer the latest reading dated **today**; if none, use the latest historical row for that station.
     Optional river_name narrows metrics to that river.
     """
     from collections import defaultdict
     today = _today_str()
+    pred_avg = get_predicted_avg_wqi_2025_2028(river_name=river_name)
     readings = list(get_clean_historical_readings())
     if river_name and str(river_name).strip():
         readings = [r for r in readings if reading_matches_river(r, str(river_name).strip())]
-    readings = [r for r in readings if (r.get("reading_date") or "")[:10] == today]
-    if not readings:
-        return {
-            "totalStations": 0,
-            "avgWqi": 0,
-            "cleanCount": 0,
-            "slightlyPollutedCount": 0,
-            "pollutedCount": 0,
-            "recentAnomaliesCount": len([a for a in _store["alerts"] if not a.get("is_read")]),
-            "predictedAvgWqi2025_2028": get_predicted_avg_wqi_2025_2028(river_name=river_name),
-            "today": today,
-            "river_name": (river_name or "").strip() or None,
-        }
     by_station = defaultdict(list)
     for r in readings:
         key = _canonical_station_key(r)
@@ -663,8 +656,10 @@ def get_summary(river_name: Optional[str] = None) -> dict:
     latest_records = []
     for _name, rows in by_station.items():
         rows = sorted(rows, key=lambda x: (x.get("reading_date") or "", x.get("id", 0)))
-        if rows:
-            latest_records.append(rows[-1])
+        if not rows:
+            continue
+        today_rows = [r for r in rows if (r.get("reading_date") or "")[:10] == today]
+        latest_records.append(today_rows[-1] if today_rows else rows[-1])
     if not latest_records:
         return {
             "totalStations": 0,
@@ -673,7 +668,8 @@ def get_summary(river_name: Optional[str] = None) -> dict:
             "slightlyPollutedCount": 0,
             "pollutedCount": 0,
             "recentAnomaliesCount": len([a for a in _store["alerts"] if not a.get("is_read")]),
-            "predictedAvgWqi2025_2028": get_predicted_avg_wqi_2025_2028(river_name=river_name),
+            "predictedAvgWqi2025_2028": pred_avg,
+            "predictedAvgWqi2026": pred_avg,
             "today": today,
             "river_name": (river_name or "").strip() or None,
         }
@@ -688,7 +684,8 @@ def get_summary(river_name: Optional[str] = None) -> dict:
         "slightlyPollutedCount": slight,
         "pollutedCount": polluted,
         "recentAnomaliesCount": len([a for a in _store["alerts"] if not a.get("is_read")]),
-        "predictedAvgWqi2025_2028": get_predicted_avg_wqi_2025_2028(river_name=river_name),
+        "predictedAvgWqi2025_2028": pred_avg,
+        "predictedAvgWqi2026": pred_avg,
         "today": today,
         "river_name": (river_name or "").strip() or None,
     }
@@ -704,7 +701,10 @@ def _status_from_reading(r: dict) -> str:
 
 
 def get_predicted_avg_wqi_2025_2028(river_name: Optional[str] = None) -> float:
-    """Average of predicted WQI for 2025-2028 (from latest forecast run). Optional river_name scopes averages."""
+    """
+    Average predicted WQI from the latest forecast run through the planning cap (to 2026-12-31).
+    Name kept for API compatibility; horizons are 2026-only in policy.
+    """
     forecast = get_latest_forecast(limit=10000, river_name=river_name)
     if not forecast:
         return 0.0
@@ -826,6 +826,46 @@ def _apply_readings_filters(
     return readings
 
 
+def _forecast_rows_for_readings_api(
+    station_name: Optional[str] = None,
+    river_name: Optional[str] = None,
+    year: Optional[int] = None,
+    status: Optional[str] = None,
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+) -> list[dict]:
+    """
+    Forecast points for dataset table / count: tomorrow through FORECAST_PLANNING_END, then date/year/status filters.
+    Pagination is applied by callers — never pass page-sized limits into get_latest_forecast before date_from/date_to.
+    """
+    y_from: Optional[int] = None
+    y_to: Optional[int] = None
+    if year is not None:
+        try:
+            y_from = y_to = int(year)
+        except (TypeError, ValueError):
+            pass
+    rows = get_latest_forecast(
+        station_code=station_name,
+        river_name=river_name,
+        limit=FORECAST_READINGS_QUERY_CAP,
+        year_from=y_from,
+        year_to=y_to,
+    )
+    if date_from:
+        rows = [f for f in rows if (f.get("date") or "") >= date_from[:10]]
+    if date_to:
+        rows = [f for f in rows if (f.get("date") or "") <= date_to[:10]]
+    if status:
+        status_norm = status.strip().lower().replace(" ", "_")
+        rows = [
+            f
+            for f in rows
+            if status_from_wqi(float(f.get("wqi", 0) or 0)) == status_norm
+        ]
+    return rows
+
+
 def get_readings_count(
     station_name: Optional[str] = None,
     river_name: Optional[str] = None,
@@ -837,18 +877,16 @@ def get_readings_count(
 ) -> int:
     """Total count matching filters. data_type: 'historical' (default) | 'forecast'. Historical = in-store readings to today; forecast = prediction_logs."""
     if (data_type or "").strip().lower() == "forecast":
-        forecast = get_latest_forecast(
-            station_code=station_name,
-            river_name=river_name,
-            limit=100000,
+        return len(
+            _forecast_rows_for_readings_api(
+                station_name=station_name,
+                river_name=river_name,
+                year=year,
+                status=status,
+                date_from=date_from,
+                date_to=date_to,
+            )
         )
-        if year is not None:
-            forecast = [f for f in forecast if (f.get("date") or "")[:4] == str(year)]
-        if date_from:
-            forecast = [f for f in forecast if (f.get("date") or "") >= date_from[:10]]
-        if date_to:
-            forecast = [f for f in forecast if (f.get("date") or "") <= date_to[:10]]
-        return len(forecast)
     readings = list(get_clean_historical_readings())
     readings = _apply_readings_filters(
         readings,
@@ -876,19 +914,15 @@ def get_readings_table(
     data_type: Optional[str] = None,
 ) -> list[dict]:
     """Dataset table: Station Name, Date, WQI, River Status, data_type. data_type: 'all' | 'historical' (date <= today) | 'forecast' (date > today from prediction_logs)."""
-    today = _today_str()
     if (data_type or "").strip().lower() == "forecast":
-        forecast = get_latest_forecast(
-            station_code=station_name,
+        forecast = _forecast_rows_for_readings_api(
+            station_name=station_name,
             river_name=river_name,
-            limit=limit + offset,
-            year_from=int(year) if year is not None else None,
-            year_to=int(year) if year is not None else None,
+            year=year,
+            status=status,
+            date_from=date_from,
+            date_to=date_to,
         )
-        if date_from:
-            forecast = [f for f in forecast if (f.get("date") or "") >= date_from[:10]]
-        if date_to:
-            forecast = [f for f in forecast if (f.get("date") or "") <= date_to[:10]]
         key = "wqi" if sort_by == "wqi" else "date"
         reverse = sort_order.lower() == "desc"
         forecast = sorted(forecast, key=lambda x: (x.get(key) if key == "wqi" else x.get(key) or ""), reverse=reverse)
@@ -960,6 +994,30 @@ def get_unique_river_names() -> list[str]:
     return sorted(seen)
 
 
+def _latest_dashboard_forecast_log() -> Optional[dict]:
+    """
+    Newest prediction_log whose forecast list has ISO-dated points (RF time-series run from run_forecast).
+
+    POST /ml/predict/forecast used to append type 'forecast' with only {wqi} entries (no date). That log
+    was sorted as the latest and made get_latest_forecast return [] — so the UI showed no forecast.
+    """
+    logs = [l for l in _store["prediction_logs"] if l.get("prediction_type") == "forecast"]
+    if not logs:
+        return None
+
+    def _has_dated_points(log: dict) -> bool:
+        pts = (log.get("result_json") or {}).get("forecast") or []
+        return any(
+            isinstance(f, dict) and len((f.get("date") or "").strip()) >= 10
+            for f in pts
+        )
+
+    for log in sorted(logs, key=lambda x: x.get("created_at", ""), reverse=True):
+        if _has_dated_points(log):
+            return log
+    return None
+
+
 def get_latest_forecast(
     station_code: Optional[str] = None,
     river_name: Optional[str] = None,
@@ -969,12 +1027,12 @@ def get_latest_forecast(
 ) -> list[dict]:
     """Forecast from prediction_logs: only dates > today (starts from tomorrow). Optional filter by station and year range."""
     today = _today_str()
-    logs = [l for l in _store["prediction_logs"] if l["prediction_type"] == "forecast"]
-    if not logs:
+    latest = _latest_dashboard_forecast_log()
+    if not latest:
         return []
-    latest = sorted(logs, key=lambda x: x["created_at"])[-1]
     forecast = latest.get("result_json", {}).get("forecast", [])
     forecast = [f for f in forecast if (f.get("date") or "") > today]
+    forecast = [f for f in forecast if (f.get("date") or "")[:10] <= FORECAST_PLANNING_END]
     if station_code:
         forecast = [f for f in forecast if f.get("station_code") == station_code or f.get("station_name") == station_code]
     if river_name and str(river_name).strip():
@@ -992,6 +1050,14 @@ def clear_historical_alerts() -> None:
     _store["alerts"] = [
         a for a in _store["alerts"]
         if (a.get("alert_type") or "").lower() != "historical"
+    ]
+
+
+def clear_forecast_alerts() -> None:
+    """Remove forecast alerts so a new forecast run does not duplicate stale rows."""
+    _store["alerts"] = [
+        a for a in _store["alerts"]
+        if (a.get("alert_type") or "").lower() != "forecast"
     ]
 
 
@@ -1068,10 +1134,9 @@ def get_forecast_alerts(limit: int = 100, river_name: Optional[str] = None) -> l
     - Sorted by earliest forecast date first
     """
     today = _today_str()
-    logs = [l for l in _store["prediction_logs"] if l.get("prediction_type") == "forecast"]
-    if not logs:
+    latest = _latest_dashboard_forecast_log()
+    if not latest:
         return []
-    latest = sorted(logs, key=lambda x: x.get("created_at", ""))[-1]
     forecast_points = latest.get("result_json", {}).get("forecast", [])
 
     def _message(status: str) -> str:
@@ -1085,6 +1150,8 @@ def get_forecast_alerts(limit: int = 100, river_name: Optional[str] = None) -> l
     for p in forecast_points:
         date_str = p.get("date") or ""
         if not date_str or date_str <= today:
+            continue
+        if date_str[:10] > FORECAST_PLANNING_END:
             continue
         try:
             wq = float(p.get("wqi", 0) or 0)

@@ -1,10 +1,11 @@
 /**
- * River Health — Map + dataset table. All data from dataset.
+ * River Health — Map, WQI + forecast chart, dataset table. All data from dataset.
  * Map shows station name, latest WQI, river status. Table: filter by station, date, status; sort by WQI.
  */
 import { useState, useEffect } from 'react'
 import RiverMap from '../components/map/RiverMap'
 import DatasetTable from '../components/dataset/DatasetTable'
+import WqiHistoricalForecastCard from '../components/dashboard/WqiHistoricalForecastCard'
 import * as dashboardApi from '../api/dashboard'
 import { SMARTRIVER_DATASET_CHANGED } from '../constants/datasetEvents'
 
@@ -62,7 +63,10 @@ export default function RiverHealthPage() {
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
         <div>
           <h1 className="font-display text-2xl font-semibold text-surface-900">River health status</h1>
-          <p className="text-surface-600 mt-0.5">River monitoring stations and readings from the River Monitoring Dataset</p>
+          <p className="text-surface-600 mt-0.5">
+            River monitoring stations and readings from the River Monitoring Dataset. Use the chart below for historical
+            WQI with ML forecast (2026 horizon); the table supports forecast rows via Data type.
+          </p>
         </div>
         <div className="flex gap-2 flex-wrap">
           {['all', 'clean', 'slightly_polluted', 'polluted'].map((f) => (
@@ -105,9 +109,15 @@ export default function RiverHealthPage() {
         )}
       </div>
 
+      <WqiHistoricalForecastCard
+        stations={stations}
+        dataRevision={dataRevision}
+        pickRiver
+      />
+
       <DatasetTable
         title="Dataset table"
-        description="Historical monitoring (to today), same slice as the dashboard overview. Switch data type to view ML forecast rows."
+        description="Historical monitoring (to today), same slice as the dashboard overview. Switch Data type to Forecast for ML daily predictions (through end of 2026). Default sort is date (earliest first)."
         datasetRevision={dataRevision}
       />
     </div>

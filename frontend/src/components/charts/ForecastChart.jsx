@@ -172,7 +172,7 @@ export default function ForecastChart({ historical = [], forecast = [], height =
     fcAgg = fcWithDates.slice(-365)
   }
 
-  // Single chronological timeline (2023 → 2028): merge and dedupe by date string
+  // Single chronological timeline: merge historical + forecast and dedupe by date
   const dateToHist = new Map()
   histAgg.forEach(({ date, wqi }) => dateToHist.set(date.getTime(), { type: 'hist', wqi }))
   const dateToFc = new Map()

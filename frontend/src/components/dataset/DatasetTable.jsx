@@ -1,9 +1,10 @@
 /**
  * Shared dataset table: Station Name, Date, WQI, River Status.
+ * Default sort is date ascending so WQI reads as a time series; users can change Sort by.
  * Used on Dashboard and River Health. Pagination (10/25/50), filters, sorting.
  * Data from API only (all dataset records).
  */
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import RiverHealthIndicator from '../dashboard/RiverHealthIndicator'
 import * as dashboardApi from '../../api/dashboard'
 
@@ -20,6 +21,20 @@ const DATA_TYPE_OPTIONS = [
   { value: 'historical', label: 'Historical (to today)' },
   { value: 'forecast', label: 'Forecast (ML predictions)' },
 ]
+
+/** Policy-aligned forecast window (matches backend cap). */
+const FORECAST_CAP_YEAR = 2026
+
+/** Next calendar month after local today within 2026; '' if none left in year (use whole-year view). */
+function defaultForecastMonthAfterToday() {
+  const t = new Date()
+  const y = t.getFullYear()
+  const m = t.getMonth()
+  if (y > FORECAST_CAP_YEAR) return ''
+  if (y < FORECAST_CAP_YEAR) return '1'
+  if (m >= 11) return ''
+  return String(m + 2)
+}
 
 /**
  * @param {{ syncedRiverName?: string, datasetRevision?: number }} props When set, river filter is controlled (e.g. dashboard-wide selector); table skips its own river dropdown.
@@ -56,6 +71,21 @@ export default function DatasetTable({
   const [page, setPage] = useState(1)
 
   const sortOption = SORT_OPTIONS.find((o) => o.value === sortValue) || SORT_OPTIONS[2]
+  const prevDataType = useRef(dataType)
+
+  useEffect(() => {
+    if (prevDataType.current !== 'forecast' && dataType === 'forecast') {
+      setMonthYear(String(FORECAST_CAP_YEAR))
+      setMonthFilter(defaultForecastMonthAfterToday())
+      setPage(1)
+    }
+    if (prevDataType.current === 'forecast' && dataType === 'historical') {
+      setMonthYear('')
+      setMonthFilter('')
+      setPage(1)
+    }
+    prevDataType.current = dataType
+  }, [dataType])
 
   useEffect(() => {
     if (datasetRevision > 0) setPage(1)
@@ -83,14 +113,21 @@ export default function DatasetTable({
     const offset = (page - 1) * pageSize
     const effYear = monthYear || undefined
     const effMonth = monthFilter !== '' ? Number(monthFilter) : undefined
+    // Year/month selectors map directly to a time-series range.
+    // - Year + month => that month only
+    // - Year only     => whole year
     const effectiveDateFrom =
       effYear && effMonth
         ? `${effYear}-${String(effMonth).padStart(2, '0')}-01`
-        : (dateFrom || undefined)
+        : effYear
+          ? `${effYear}-01-01`
+          : (dateFrom || undefined)
     const effectiveDateTo =
       effYear && effMonth
         ? `${effYear}-${String(effMonth).padStart(2, '0')}-${new Date(Number(effYear), effMonth, 0).getDate()}`
-        : (dateTo || undefined)
+        : effYear
+          ? `${effYear}-12-31`
+          : (dateTo || undefined)
 
     // Build query without sending "undefined"/empty-string values.
     // This prevents backend filters from accidentally excluding all rows.
@@ -269,7 +306,7 @@ export default function DatasetTable({
             className="input-field w-auto min-w-[140px]"
           >
             <option value="">All years</option>
-            {years.map((y) => (
+            {(dataType === 'forecast' ? [FORECAST_CAP_YEAR] : years).map((y) => (
               <option key={y} value={String(y)}>{y}</option>
             ))}
           </select>
@@ -367,8 +404,8 @@ export default function DatasetTable({
           <thead>
             <tr className="bg-surface-100 text-left">
               <th className="px-4 py-2 font-medium text-surface-700">River</th>
-              <th className="px-4 py-2 font-medium text-surface-700">Station</th>
               <th className="px-4 py-2 font-medium text-surface-700">Date</th>
+              <th className="px-4 py-2 font-medium text-surface-700">Station</th>
               <th className="px-4 py-2 font-medium text-surface-700">WQI</th>
               <th className="px-4 py-2 font-medium text-surface-700">Status</th>
             </tr>
@@ -385,8 +422,8 @@ export default function DatasetTable({
                   className={`border-t border-surface-100 transition-colors ${rowStatusClass(r.river_status)}`}
                 >
                   <td className="px-4 py-2 font-medium text-surface-800">{r.river_name || '—'}</td>
+                  <td className="px-4 py-2 text-surface-800 font-mono text-xs sm:text-sm">{r.date || '—'}</td>
                   <td className="px-4 py-2 text-surface-800">{r.station_name || r.station_code || '—'}</td>
-                  <td className="px-4 py-2 text-surface-800">{r.date || '—'}</td>
                   <td className="px-4 py-2">{r.wqi != null ? Number(r.wqi).toFixed(1) : '—'}</td>
                   <td className="px-4 py-2">
                     <RiverHealthIndicator wqi={r.wqi} compact />

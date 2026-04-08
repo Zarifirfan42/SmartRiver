@@ -14,7 +14,7 @@ readings = _store["readings"]
 stations = ["Sungai Kulim", "Sungai Klang", "Sungai Gombak", "Sungai Perak", "Sungai Pinang"]
 
 tomorrow = date.today() + timedelta(days=1)
-end_date = date(2028, 12, 31)
+end_date = date(2026, 12, 31)
 
 baseline_wqi = {}
 for station in stations:

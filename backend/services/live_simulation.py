@@ -1,7 +1,7 @@
 """
 Simulated live data for SmartRiver.
-Generates daily WQI per station from 2025 onwards, continuing from the latest available value
-(historical 2023–2024 or forecast 2025–2028). Uses trend-following steps and optional seasonal variation.
+Generates daily WQI per station from the latest available value in-store, continuing forward
+with small random steps and optional seasonal variation (separate from ML forecast horizon).
 """
 import random
 from datetime import date

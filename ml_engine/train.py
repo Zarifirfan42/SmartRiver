@@ -3,6 +3,7 @@ Train SmartRiver ML models (Random Forest, LSTM, Isolation Forest).
 
 Requirements (from project root):
 - Input: `datasets/by_river/**/*.csv` (default when present) or a single CSV in `datasets/`
+- Optional: `--year-from` / `--year-to` to train on a calendar-year window (e.g. 2023–2025)
 - Preprocessing: `data_preprocessing.services.pipeline.run_pipeline` / `run_pipeline_multi`
 - Outputs:
   - Random Forest (river_status classifier) -> ml_models/random_forest/model.joblib
@@ -23,6 +24,8 @@ import json
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
+
+import pandas as pd
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -77,6 +80,28 @@ def _dedupe_one_csv_per_river(paths: list[Path]) -> list[Path]:
         if keep_new:
             by_river[key] = p
     return sorted(by_river.values())
+
+
+def _filter_by_calendar_years(df: pd.DataFrame, year_from: int | None, year_to: int | None) -> pd.DataFrame:
+    """Keep rows whose `date` falls in [year_from, year_to] (inclusive). Requires parsed datetime `date` column."""
+    from data_preprocessing.services.pipeline import DATE_COL
+
+    if year_from is None and year_to is None:
+        return df
+    if DATE_COL not in df.columns:
+        print("Warning: year filter skipped (no date column).")
+        return df
+    dt = pd.to_datetime(df[DATE_COL], errors="coerce")
+    if dt.isna().all():
+        print("Warning: year filter skipped (no valid dates).")
+        return df
+    y0 = year_from if year_from is not None else 1900
+    y1 = year_to if year_to is not None else 2100
+    years = dt.dt.year
+    before = len(df)
+    out = df.loc[(years >= y0) & (years <= y1)].copy()
+    print(f"Calendar year filter {y0}-{y1}: {before} -> {len(out)} rows")
+    return out
 
 
 def _collect_training_csv_paths(
@@ -160,6 +185,8 @@ def run_training_from_paths(
     write_metrics_json: bool = True,
     metrics_json: Path | None = None,
     print_summary: bool = True,
+    year_from: int | None = None,
+    year_to: int | None = None,
 ) -> dict:
     """
     Train RF + LSTM + Isolation Forest from one or more CSV paths (after SmartRiver pipeline).
@@ -188,6 +215,8 @@ def run_training_from_paths(
         if len(paths) > 12:
             print(f"  ... and {len(paths) - 12} more")
         df_raw = ingest_many_csv(paths)
+
+    df_raw = _filter_by_calendar_years(df_raw, year_from, year_to)
 
     # Shared, leakage-safe base table: clean + impute + WQI/river_status only.
     df_base = clean_data(df_raw, remove_duplicates=True)
@@ -316,6 +345,20 @@ def main() -> int:
         default=None,
         help="Where to write training_metrics.json (default: ml_models/training_metrics.json)",
     )
+    parser.add_argument(
+        "--year-from",
+        type=int,
+        default=None,
+        metavar="Y",
+        help="Keep rows with calendar year >= Y (requires a date column in CSV)",
+    )
+    parser.add_argument(
+        "--year-to",
+        type=int,
+        default=None,
+        metavar="Y",
+        help="Keep rows with calendar year <= Y (requires a date column in CSV)",
+    )
     args = parser.parse_args()
 
     paths = _collect_training_csv_paths(
@@ -336,6 +379,8 @@ def main() -> int:
         write_metrics_json=True,
         metrics_json=args.metrics_json,
         print_summary=True,
+        year_from=args.year_from,
+        year_to=args.year_to,
     )
     print("Done.")
     return 0

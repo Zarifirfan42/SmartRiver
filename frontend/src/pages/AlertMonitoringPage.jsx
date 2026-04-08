@@ -1,5 +1,6 @@
 import { useState, useEffect, useMemo } from 'react'
 import * as dashboardApi from '../api/dashboard'
+import { SMARTRIVER_DATASET_CHANGED } from '../constants/datasetEvents'
 import {
   countPollutedStations,
   countSlightlyPollutedStations,
@@ -20,6 +21,16 @@ function alertDateYmd(dateStr) {
   const s = String(dateStr).trim().slice(0, 10)
   if (s.length < 10 || s[4] !== '-' || s[7] !== '-') return null
   return s
+}
+
+/** Chronological order for WQI alert rows: date ascending, then station (time-series friendly). */
+function compareAlertsChronological(a, b) {
+  const da = String(a.date || '').slice(0, 10)
+  const db = String(b.date || '').slice(0, 10)
+  if (da !== db) return da.localeCompare(db)
+  const sa = String(a.station_name || a.station_code || '')
+  const sb = String(b.station_name || b.station_code || '')
+  return sa.localeCompare(sb)
 }
 
 /** Local calendar date as YYYY-MM-DD (matches typical backend reading_date strings). */
@@ -47,6 +58,8 @@ export default function AlertMonitoringPage() {
   const [forecastStationFilter, setForecastStationFilter] = useState('')
   const [forecastYearFilter, setForecastYearFilter] = useState('')
   const [forecastMonthFilter, setForecastMonthFilter] = useState('') // '' or '1'..'12'
+  /** Forecast alerts only: slightly polluted vs polluted */
+  const [forecastStatusFilter, setForecastStatusFilter] = useState('')
 
   /** Re-render periodically so "today" rolls over at local midnight without a full refresh */
   const [clockTick, setClockTick] = useState(0)
@@ -58,8 +71,15 @@ export default function AlertMonitoringPage() {
   /** Today's readings for WQI summary counts (local date, optional river filter) */
   const [todayReadings, setTodayReadings] = useState([])
   const [todayReadingsLoading, setTodayReadingsLoading] = useState(false)
+  const [dataRevision, setDataRevision] = useState(0)
 
   const todayYmd = localTodayYmd()
+
+  useEffect(() => {
+    const bump = () => setDataRevision((n) => n + 1)
+    window.addEventListener(SMARTRIVER_DATASET_CHANGED, bump)
+    return () => window.removeEventListener(SMARTRIVER_DATASET_CHANGED, bump)
+  }, [])
 
   useEffect(() => {
     let cancelled = false
@@ -73,7 +93,7 @@ export default function AlertMonitoringPage() {
     }
     loadStations()
     return () => { cancelled = true }
-  }, [])
+  }, [dataRevision])
 
   useEffect(() => {
     let cancelled = false
@@ -101,7 +121,7 @@ export default function AlertMonitoringPage() {
     }
     fetchAlerts()
     return () => { cancelled = true }
-  }, [riverFilter])
+  }, [riverFilter, dataRevision])
 
   useEffect(() => {
     let cancelled = false
@@ -134,14 +154,13 @@ export default function AlertMonitoringPage() {
 
   const filteredHistorical = useMemo(() => {
     const filtered = historicalToday.filter((a) => {
-      if (statusFilter && a.river_status !== statusFilter) return false
+      if (statusFilter) {
+        const st = String(a.river_status || '').toLowerCase().replace(/\s+/g, '_')
+        if (st !== statusFilter) return false
+      }
       return true
     })
-    return [...filtered].sort((a, b) =>
-      String(a.station_name || a.station_code || '').localeCompare(
-        String(b.station_name || b.station_code || ''),
-      ),
-    )
+    return [...filtered].sort(compareAlertsChronological)
   }, [historicalToday, statusFilter])
 
   const forecastStationOptions = useMemo(() => {
@@ -160,11 +179,15 @@ export default function AlertMonitoringPage() {
       .sort((x, y) => x.label.localeCompare(y.label))
   }, [forecastAlerts])
 
+  /** Forecast horizon is capped at end of 2026 (no 2027+ in product policy). */
   const forecastYearOptions = useMemo(() => {
-    const years = new Set()
+    const years = new Set(['2026'])
     forecastAlerts.forEach((a) => {
       const ymd = alertDateYmd(a.date)
-      if (ymd) years.add(ymd.slice(0, 4))
+      if (ymd) {
+        const y = ymd.slice(0, 4)
+        if (y <= '2026') years.add(y)
+      }
     })
     return [...years].sort((a, b) => b.localeCompare(a))
   }, [forecastAlerts])
@@ -176,7 +199,10 @@ export default function AlertMonitoringPage() {
         : String(Number(forecastMonthFilter)).padStart(2, '0')
 
     const list = forecastAlerts.filter((a) => {
-      if (statusFilter && a.river_status !== statusFilter) return false
+      if (forecastStatusFilter) {
+        const st = String(a.river_status || '').toLowerCase().replace(/\s+/g, '_')
+        if (st !== forecastStatusFilter) return false
+      }
       if (forecastStationFilter) {
         const key = String(a.station_code || a.station_name || '').trim()
         if (key !== forecastStationFilter) return false
@@ -186,10 +212,10 @@ export default function AlertMonitoringPage() {
       if (monthPadded && (!ymd || ymd.slice(5, 7) !== monthPadded)) return false
       return true
     })
-    return [...list].sort((a, b) => String(a.date || '').localeCompare(String(b.date || '')))
+    return [...list].sort(compareAlertsChronological)
   }, [
     forecastAlerts,
-    statusFilter,
+    forecastStatusFilter,
     forecastStationFilter,
     forecastYearFilter,
     forecastMonthFilter,
@@ -207,10 +233,14 @@ export default function AlertMonitoringPage() {
       statusFilter ||
       forecastStationFilter ||
       forecastYearFilter ||
-      forecastMonthFilter,
+      forecastMonthFilter ||
+      forecastStatusFilter,
   )
   const forecastFiltersActive = Boolean(
-    forecastStationFilter || forecastYearFilter || forecastMonthFilter,
+    forecastStationFilter ||
+      forecastYearFilter ||
+      forecastMonthFilter ||
+      forecastStatusFilter,
   )
   const hasNoAlerts = !loading && filteredHistorical.length === 0 && filteredForecast.length === 0
 
@@ -225,11 +255,13 @@ export default function AlertMonitoringPage() {
           <span className="font-medium text-surface-800">Monitoring (historical)</span> shows{' '}
           <span className="font-medium text-surface-800">today only</span> — alerts dated{' '}
           <span className="font-mono">{todayYmd}</span> (local date).{' '}
-          <span className="font-medium text-surface-800">Forecast</span> lists all future polluted predictions; use
-          station / year / month filters below that table.
+          <span className="font-medium text-surface-800">Forecast</span> lists future dates where the model predicts{' '}
+          <span className="font-medium text-surface-800">slightly polluted or polluted</span> WQI only (clean forecast days
+          do not appear here). Use station / year / month / forecast status filters on that table. Data refreshes when the
+          dataset or forecast run changes.
         </p>
         <div className="text-sm text-surface-500 mt-2">
-          <div>Data source: historical / simulated live (today) · forecast (full horizon)</div>
+          <div>Data source: historical / simulated live (today) · forecast (through end of 2026)</div>
           <div>Page time: {new Date().toLocaleString()}</div>
         </div>
       </div>
@@ -264,11 +296,11 @@ export default function AlertMonitoringPage() {
             </select>
           </div>
           <div>
-            <label className="label">Status</label>
+            <label className="label">Monitoring status (today)</label>
             <select
               value={statusFilter}
               onChange={(e) => setStatusFilter(e.target.value)}
-              className="input-field w-auto min-w-[180px]"
+              className="input-field w-auto min-w-[200px]"
             >
               <option value="">All statuses</option>
               <option value="slightly_polluted">Slightly Polluted</option>
@@ -342,7 +374,8 @@ export default function AlertMonitoringPage() {
           </p>
           {filtersActive && (
             <p className="text-sm text-surface-500 mt-2">
-              Try changing river, status, or forecast filters (station / year / month). Monitoring stays today-only; if
+              Try changing river, monitoring status, or forecast filters (station / year / month / forecast status).
+              Monitoring stays today-only; if
               today has no readings, that section stays empty until data exists (e.g. simulated live).
             </p>
           )}
@@ -354,16 +387,16 @@ export default function AlertMonitoringPage() {
         <div className="rounded-xl border border-surface-200 bg-white p-4 shadow-sm">
           <h2 className="font-display font-semibold text-surface-800 mb-2">Today&apos;s monitoring alerts</h2>
           <p className="text-sm text-surface-500 mb-4">
-            Latest monitoring or simulated live per station, only when the alert date is today ({todayYmd}). Sorted by
-            station name.
+            Latest monitoring or simulated live per station, only when the alert date is today ({todayYmd}). Rows are in{' '}
+            <strong>time-series order</strong> (date, then station).
           </p>
           <div className="overflow-x-auto rounded-lg border border-surface-200">
             <table className="w-full text-sm">
               <thead>
                 <tr className="bg-surface-100 text-left">
                   <th className="px-4 py-2 font-medium text-surface-700">River</th>
-                  <th className="px-4 py-2 font-medium text-surface-700">Station</th>
                   <th className="px-4 py-2 font-medium text-surface-700">Date</th>
+                  <th className="px-4 py-2 font-medium text-surface-700">Station</th>
                   <th className="px-4 py-2 font-medium text-surface-700">WQI</th>
                   <th className="px-4 py-2 font-medium text-surface-700">Status</th>
                   <th className="px-4 py-2 font-medium text-surface-700">Message</th>
@@ -382,8 +415,8 @@ export default function AlertMonitoringPage() {
                   filteredHistorical.map((a, i) => (
                     <tr key={`${a.station_name || a.station_code}-${a.date}-${i}`} className="border-t border-surface-100">
                       <td className="px-4 py-2 text-surface-800">{a.river_name || '—'}</td>
+                      <td className="px-4 py-2 text-surface-800 font-mono text-xs sm:text-sm">{a.date || '—'}</td>
                       <td className="px-4 py-2 font-medium text-surface-800">{a.station_name || a.station_code || '—'}</td>
-                      <td className="px-4 py-2 text-surface-800">{a.date || '—'}</td>
                       <td className="px-4 py-2">{a.wqi != null ? Number(a.wqi).toFixed(1) : '—'}</td>
                       <td className="px-4 py-2">{formatStatus(a.river_status)}</td>
                       <td className="px-4 py-2 text-surface-700 max-w-xs">{a.message || '—'}</td>
@@ -401,10 +434,22 @@ export default function AlertMonitoringPage() {
         <div className="rounded-xl border border-surface-200 bg-white p-4 shadow-sm">
           <h2 className="font-display font-semibold text-surface-800 mb-2">Forecast alerts</h2>
           <p className="text-sm text-surface-500 mb-4">
-            From future prediction points. Sorted by forecast date (earliest first). Narrow with station, year, and
-            month.
+            From future prediction points. Table is in <strong>time-series order</strong> (forecast date, then station).
+            Use filters below — including slightly polluted / polluted for forecast only.
           </p>
           <div className="flex flex-wrap items-end gap-4 mb-4 pb-4 border-b border-surface-100">
+            <div>
+              <label className="label">Forecast status</label>
+              <select
+                value={forecastStatusFilter}
+                onChange={(e) => setForecastStatusFilter(e.target.value)}
+                className="input-field w-auto min-w-[200px]"
+              >
+                <option value="">All forecast alert statuses</option>
+                <option value="slightly_polluted">Slightly Polluted</option>
+                <option value="polluted">Polluted</option>
+              </select>
+            </div>
             <div>
               <label className="label">Forecast station</label>
               <select
@@ -463,8 +508,8 @@ export default function AlertMonitoringPage() {
               <thead>
                 <tr className="bg-surface-100 text-left">
                   <th className="px-4 py-2 font-medium text-surface-700">River</th>
-                  <th className="px-4 py-2 font-medium text-surface-700">Station</th>
                   <th className="px-4 py-2 font-medium text-surface-700">Forecast date</th>
+                  <th className="px-4 py-2 font-medium text-surface-700">Station</th>
                   <th className="px-4 py-2 font-medium text-surface-700">WQI</th>
                   <th className="px-4 py-2 font-medium text-surface-700">Status</th>
                   <th className="px-4 py-2 font-medium text-surface-700">Message</th>
@@ -477,7 +522,7 @@ export default function AlertMonitoringPage() {
                       {forecastAlerts.length === 0
                         ? 'No forecast alerts.'
                         : forecastFiltersActive
-                          ? 'No forecast alerts match the selected station, year, or month.'
+                          ? 'No forecast alerts match the selected station, year, month, or forecast status.'
                           : 'No forecast alerts.'}
                     </td>
                   </tr>
@@ -485,8 +530,8 @@ export default function AlertMonitoringPage() {
                   filteredForecast.map((a, i) => (
                     <tr key={`${a.station_name || a.station_code}-${a.date}-${i}`} className="border-t border-surface-100">
                       <td className="px-4 py-2 text-surface-800">{a.river_name || '—'}</td>
+                      <td className="px-4 py-2 text-surface-800 font-mono text-xs sm:text-sm">{a.date || '—'}</td>
                       <td className="px-4 py-2 font-medium text-surface-800">{a.station_name || a.station_code || '—'}</td>
-                      <td className="px-4 py-2 text-surface-800">{a.date || '—'}</td>
                       <td className="px-4 py-2">{a.wqi != null ? Number(a.wqi).toFixed(1) : '—'}</td>
                       <td className="px-4 py-2">{formatStatus(a.river_status)}</td>
                       <td className="px-4 py-2 text-surface-700 max-w-xs">{a.message || '—'}</td>

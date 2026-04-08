@@ -165,7 +165,8 @@ async def predict_forecast(
         model = keras.models.load_model(path / "lstm_model.keras")
         pred_s = model.predict(X, verbose=0)[0][:h]
         pred = scaler.inverse_transform(pred_s.reshape(-1, 1)).flatten().tolist()
-        save_prediction_log("forecast", {"forecast": [{"wqi": v} for v in pred]}, model_name="lstm")
+        # Use a distinct type so dashboard get_latest_forecast (dated RF series) is not shadowed by this log.
+        save_prediction_log("forecast_lstm", {"forecast": [{"wqi": v} for v in pred]}, model_name="lstm")
         return {"forecast": pred, "horizon": len(pred)}
     except ImportError:
         return {"forecast": [], "message": "TensorFlow required for LSTM forecast."}

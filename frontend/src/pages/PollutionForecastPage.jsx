@@ -1,7 +1,6 @@
 /**
- * Pollution Forecast — Historical (2023-2024) + Forecast (2025-2028).
- * User selects Station name and Forecast range (year or All).
- * Chart: Historical WQI (solid), Predicted WQI (dashed). X-axis: chronological 2023 → 2028.
+ * Pollution Forecast — Historical (to today) + Forecast (2026 only, policy cap to 2026-12-31).
+ * Chart: Historical WQI (solid), Predicted WQI (dashed).
  * Table: Date, Station Name, Predicted WQI, Predicted River Status.
  */
 import { useState, useEffect } from 'react'
@@ -9,26 +8,36 @@ import ForecastChart from '../components/charts/ForecastChart'
 import * as dashboardApi from '../api/dashboard'
 import { SMARTRIVER_DATASET_CHANGED } from '../constants/datasetEvents'
 
-const MONTH_RANGE_OPTIONS = [
-  { value: 1, label: '1 month (Jan)' },
-  { value: 2, label: '2 months (Jan–Feb)' },
-  { value: 3, label: '3 months (Jan–Mar)' },
-  { value: 4, label: '4 months (Jan–Apr)' },
-  { value: 5, label: '5 months (Jan–May)' },
-  { value: 6, label: '6 months (Jan–Jun)' },
-  { value: 7, label: '7 months (Jan–Jul)' },
-  { value: 8, label: '8 months (Jan–Aug)' },
-  { value: 9, label: '9 months (Jan–Sep)' },
-  { value: 10, label: '10 months (Jan–Oct)' },
-  { value: 11, label: '11 months (Jan–Nov)' },
-  { value: 12, label: '12 months (Jan–Dec)' },
+const MONTH_RANGE_OPTIONS = Array.from({ length: 12 }, (_, i) => ({
+  value: i + 1,
+  label: `${i + 1} month${i === 0 ? '' : 's'}`,
+}))
+
+const YEAR_OPTIONS = [{ value: 2026, label: '2026' }]
+
+/** Table month filter starts at April — Jan–Mar are omitted (no meaningful “after today” forecast rows in the 2026 horizon). */
+const FORECAST_TABLE_MONTH_MIN = 4
+
+const MONTH_NAMES = [
+  'January',
+  'February',
+  'March',
+  'April',
+  'May',
+  'June',
+  'July',
+  'August',
+  'September',
+  'October',
+  'November',
+  'December',
 ]
 
-const YEAR_OPTIONS = [
-  { value: 2026, label: '2026' },
-  { value: 2027, label: '2027' },
-  { value: 2028, label: '2028' },
-]
+/** YYYY-MM-DD prefix for comparisons (ISO dates sort lexicographically). */
+function toYmd(d) {
+  if (!d) return ''
+  return String(d).trim().slice(0, 10)
+}
 
 function formatStatus(s) {
   if (!s) return '—'
@@ -43,8 +52,9 @@ export default function PollutionForecastPage() {
   const [stations, setStations] = useState([])
   /** Canonical river name; scopes historical series + forecast points. */
   const [river, setRiver] = useState('')
-  const [selectedMonthRange, setSelectedMonthRange] = useState(1)
-  const [selectedYear, setSelectedYear] = useState(2027)
+  /** Default to full calendar year so early-year month presets do not hide all future forecast points. */
+  const [selectedMonthRange, setSelectedMonthRange] = useState(12)
+  const [selectedYear, setSelectedYear] = useState(2026)
   const [historical, setHistorical] = useState([])
   const [forecast, setForecast] = useState([])
   const [today, setToday] = useState(null)
@@ -52,6 +62,12 @@ export default function PollutionForecastPage() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
   const [dataRevision, setDataRevision] = useState(0)
+  /** Table only: '' = chart month range (from April onward in table); '4'..'12' = single month. */
+  const [tableMonthOnly, setTableMonthOnly] = useState('')
+
+  useEffect(() => {
+    if (['1', '2', '3'].includes(tableMonthOnly)) setTableMonthOnly('')
+  }, [tableMonthOnly])
 
   useEffect(() => {
     const bump = () => setDataRevision((n) => n + 1)
@@ -111,12 +127,45 @@ export default function PollutionForecastPage() {
     return () => { cancelled = true }
   }, [river, selectedYear, dataRevision])
 
-  const predictionTableRows = forecast.map((f) => ({
+  const maxMonth = selectedMonthRange
+  const yearStrTable = String(selectedYear)
+  const todayYmd = toYmd(today)
+
+  /** Forecast points strictly after server “today” (time-series / ML horizon only). */
+  const forecastAfterToday = forecast.filter((f) => {
+    const ds = toYmd(f.date)
+    if (!ds) return false
+    if (!todayYmd) return true
+    return ds > todayYmd
+  })
+
+  const forecastRowsForTable = forecastAfterToday
+    .filter((f) => {
+      const ds = toYmd(f.date)
+      if (!ds.startsWith(yearStrTable)) return false
+      const m = Number(ds.slice(5, 7))
+      if (m < FORECAST_TABLE_MONTH_MIN) return false
+      if (tableMonthOnly !== '') {
+        return m === Number(tableMonthOnly)
+      }
+      return m <= maxMonth
+    })
+    .sort((a, b) => {
+      const c = toYmd(a.date).localeCompare(toYmd(b.date))
+      if (c !== 0) return c
+      const sa = String(a.station_name || a.station_code || '')
+      const sb = String(b.station_name || b.station_code || '')
+      return sa.localeCompare(sb)
+    })
+
+  const predictionTableRows = forecastRowsForTable.map((f) => ({
     date: f.date || '—',
     riverName: f.river_name || f.station_name || '—',
     stationName: f.station_name || f.station_code || '—',
     predictedWqi: f.wqi != null ? Number(f.wqi) : null,
-    predictedStatus: f.river_status ? formatStatus(f.river_status) : (f.wqi >= 81 ? 'Clean' : f.wqi >= 60 ? 'Slightly Polluted' : 'Polluted'),
+    predictedStatus: f.river_status
+      ? formatStatus(f.river_status)
+      : (Number(f.wqi) >= 81 ? 'Clean' : Number(f.wqi) >= 60 ? 'Slightly Polluted' : 'Polluted'),
   }))
 
   return (
@@ -124,7 +173,7 @@ export default function PollutionForecastPage() {
       <div>
         <h1 className="font-display text-2xl font-semibold text-surface-900">Pollution forecast</h1>
         <p className="text-surface-600 mt-0.5">
-          Historical data (up to today) and forecast predictions (from tomorrow onwards). Select year and month range to view predictions; each forecast point uses its original forecast date.
+          Historical data (up to today) and ML forecast predictions through the end of 2026 only (dates after today). Select month range within 2026 to view predictions.
         </p>
         <div className="text-sm text-surface-500 mt-2">
           <div>Data Source: Historical, Simulated Live, Forecast</div>
@@ -193,7 +242,7 @@ export default function PollutionForecastPage() {
       <div className="card">
         <h2 className="font-display font-semibold text-surface-800 mb-4">Forecast chart</h2>
         <p className="text-sm text-surface-500 mb-4">
-          Daily predicted WQI for the selected year and month range (January up to the selected month). Historical data ends at today; forecast starts from tomorrow.
+          Daily predicted WQI for the selected year and how many months to include from the start of that year. Historical data ends at today; forecast starts after today.
         </p>
         {loading ? (
           <p className="text-surface-500 py-8">Loading…</p>
@@ -208,9 +257,11 @@ export default function PollutionForecastPage() {
               const m = Number(ds.slice(5, 7))
               return m >= 1 && m <= maxMonth
             })
+            const todayCut = toYmd(today)
             const fcFiltered = forecast.filter((f) => {
-              const ds = (f.date || '').slice(0, 10)
+              const ds = toYmd(f.date)
               if (!ds.startsWith(yearStr)) return false
+              if (todayCut && ds <= todayCut) return false
               const m = Number(ds.slice(5, 7))
               return m >= 1 && m <= maxMonth
             })
@@ -233,8 +284,33 @@ export default function PollutionForecastPage() {
       <div className="card">
         <h2 className="font-display font-semibold text-surface-800 mb-4">Forecast table</h2>
         <p className="text-sm text-surface-500 mb-4">
-          Date, River, Station, predicted WQI, and status (WQI ≥81 Clean, 60-80 Slightly Polluted, &lt;60 Polluted).
+          Rows are <span className="font-medium text-surface-700">only dates after server today</span>, in time order.
+          January–March are not listed (they do not appear in the forecast table). Filter from April onward without
+          changing the chart.
         </p>
+        <div className="flex flex-wrap items-end gap-4 mb-4">
+          <div>
+            <label className="label">Table — month</label>
+            <select
+              value={tableMonthOnly}
+              onChange={(e) => setTableMonthOnly(e.target.value)}
+              className="input-field w-auto min-w-[220px]"
+              disabled={loading}
+            >
+              <option value="">All months in chart range</option>
+              {MONTH_NAMES.map((name, idx) => {
+                const monthNum = idx + 1
+                if (monthNum < FORECAST_TABLE_MONTH_MIN) return null
+                const v = String(monthNum)
+                return (
+                  <option key={v} value={v}>
+                    {name}
+                  </option>
+                )
+              })}
+            </select>
+          </div>
+        </div>
         <div className="overflow-x-auto rounded-lg border border-surface-200">
           <table className="w-full text-sm">
             <thead>
@@ -248,7 +324,13 @@ export default function PollutionForecastPage() {
             </thead>
             <tbody>
               {predictionTableRows.length === 0 ? (
-                <tr><td colSpan={5} className="px-4 py-8 text-center text-surface-500">No forecast data. Ensure backend has run forecast (2025-2028) on startup.</td></tr>
+                <tr>
+                  <td colSpan={5} className="px-4 py-8 text-center text-surface-500">
+                    No forecast rows for {selectedYear}
+                    {tableMonthOnly ? ` · ${MONTH_NAMES[Number(tableMonthOnly) - 1] || 'selected month'}` : ' · selected range'}
+                    . Adjust the table month filter or chart range, or ensure the backend has generated the forecast.
+                  </td>
+                </tr>
               ) : (
                 predictionTableRows.map((row, i) => (
                   <tr key={i} className="border-t border-surface-100">

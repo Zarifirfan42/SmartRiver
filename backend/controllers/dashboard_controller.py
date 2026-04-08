@@ -59,8 +59,8 @@ def dashboard_time_series(
 def dashboard_forecast(
     station_code: str = Query(None, description="Station code or name for forecast"),
     river_name: str = Query(None, description="Filter forecast points by river, e.g. Sungai Gombak"),
-    year_from: int = Query(None, description="Forecast year from (2025-2028)"),
-    year_to: int = Query(None, description="Forecast year to (2025-2028)"),
+    year_from: int = Query(None, description="Forecast year from (2026 only; capped at 2026-12-31)"),
+    year_to: int = Query(None, description="Forecast year to (2026 only; capped at 2026-12-31)"),
     limit: int = Query(5000, ge=1, le=10000),
 ):
     """Forecast predictions: only dates > today. Historical data comes from time-series endpoint."""

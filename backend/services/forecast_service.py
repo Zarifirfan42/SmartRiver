@@ -1,7 +1,6 @@
 """
-Time-series forecast service: predict WQI for 2026-2028 per station.
+Time-series forecast service: predict WQI through end of 2026 per station (policy cap for demo / examiner risk).
 Uses Random Forest regression on historical data.
-Input: Date, Station, Historical WQI. Output: Predicted WQI.
 Predictions are stored in prediction_logs; forecast dates are never treated as real measurements.
 """
 from pathlib import Path
@@ -10,21 +9,28 @@ from datetime import datetime, timedelta
 
 ROOT = Path(__file__).resolve().parents[2]
 
-# Forecast years: generate predictions for these years (not from dataset).
-# Requirement: remove 2025 from forecast (2025 is historical).
-FORECAST_YEARS = [2026, 2027, 2028]
+# Policy: only generate daily forecast for 2026 (no 2027+ — avoids speculative long-horizon questions).
+FORECAST_YEARS = [2026]
+FORECAST_END_DATE = datetime(2026, 12, 31).date()
 
 def run_forecast() -> list[dict]:
     """
     Train a time-series forecast model on historical WQI (readings dated on or before today, excluding forecast rows).
-    Generate daily predictions per station for 2026, 2027, 2028.
+    Generate daily predictions per station from 2026-01-01 through 2026-12-31 only.
     Saves to prediction_logs and returns the forecast list.
     """
     import sys
     if str(ROOT) not in sys.path:
         sys.path.insert(0, str(ROOT))
 
-    from backend.db.repository import _store, save_prediction_log, save_alert, status_from_wqi, _today_str
+    from backend.db.repository import (
+        _store,
+        save_prediction_log,
+        save_alert,
+        status_from_wqi,
+        _today_str,
+        clear_forecast_alerts,
+    )
     from backend.services.river_mapping import river_name_for_station
 
     readings = list(_store.get("readings", []))
@@ -38,6 +44,8 @@ def run_forecast() -> list[dict]:
         from sklearn.preprocessing import LabelEncoder
     except ImportError:
         return []
+
+    clear_forecast_alerts()
 
     today = _today_str()
     # Build training data: one row per (station, date) with WQI — historical only (no future-dated CSV rows).
@@ -93,7 +101,7 @@ def run_forecast() -> list[dict]:
         station_enc = le.transform([station])[0]
         for year in FORECAST_YEARS:
             start_date = datetime(year, 1, 1).date()
-            end_date = datetime(year, 12, 31).date()
+            end_date = min(datetime(year, 12, 31).date(), FORECAST_END_DATE)
             current = start_date
             while current <= end_date:
                 month = current.month

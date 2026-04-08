@@ -1,5 +1,6 @@
 /**
- * Dashboard summary KPIs: stations, average WQI, status distribution (today's readings per station only).
+ * Dashboard summary KPIs: stations, average WQI, status distribution.
+ * Backend uses one reading per station: today when present, else latest historical (aligned with the map).
  */
 export default function DashboardSummary({
   totalStations = 0,
@@ -18,19 +19,21 @@ export default function DashboardSummary({
         </div>
       ) : null}
       <div className="bg-white rounded-xl border border-slate-200 p-4 shadow-sm">
-        <p className="text-sm text-slate-500">Stations with a reading today</p>
-        <p className="text-2xl font-semibold text-slate-900">{totalStations}</p>
+        <p className="text-sm text-slate-500">Stations in snapshot</p>
+        <p className="text-xs text-slate-400 mt-0.5">Today’s row when available; else latest reading</p>
+        <p className="text-2xl font-semibold text-slate-900 mt-1">{totalStations}</p>
       </div>
       <div className="bg-white rounded-xl border border-slate-200 p-4 shadow-sm">
-        <p className="text-sm text-slate-500">Average WQI (today only)</p>
-        <p className="text-2xl font-semibold text-cyan-600">{Number(avgWqi).toFixed(1)}</p>
+        <p className="text-sm text-slate-500">Average WQI</p>
+        <p className="text-xs text-slate-400 mt-0.5">From the same per-station snapshot</p>
+        <p className="text-2xl font-semibold text-cyan-600 mt-1">{Number(avgWqi).toFixed(1)}</p>
       </div>
       <div className="bg-white rounded-xl border border-slate-200 p-4 shadow-sm">
-        <p className="text-sm text-slate-500">Clean (today)</p>
+        <p className="text-sm text-slate-500">Clean</p>
         <p className="text-2xl font-semibold text-emerald-600">{cleanCount}</p>
       </div>
       <div className="rounded-xl border-2 border-amber-200 bg-amber-50/80 p-4 shadow-sm ring-1 ring-amber-100">
-        <p className="text-sm font-medium text-amber-900">Slightly polluted (today)</p>
+        <p className="text-sm font-medium text-amber-900">Slightly polluted</p>
         <p className="text-xs text-amber-800/90 mt-0.5 mb-2">WQI 60–80 — monitor closely</p>
         <p className="text-3xl font-bold text-amber-700 tabular-nums">{slightlyPollutedCount}</p>
       </div>
@@ -42,7 +45,7 @@ export default function DashboardSummary({
         }`}
       >
         <p className={`text-sm ${pollutedCount > 0 ? 'font-medium text-red-900' : 'text-slate-500'}`}>
-          Polluted (today)
+          Polluted
         </p>
         <p className={`text-xs mt-0.5 mb-2 ${pollutedCount > 0 ? 'text-red-800/90' : 'text-slate-500'}`}>
           {pollutedCount === 0 ? 'None — within acceptable range' : 'WQI under 60 — immediate attention'}
