@@ -1,0 +1,23 @@
+[
+  {
+    "station_name": "Sungai Klang",
+    "date": "2025-12-25",
+    "wqi": 74.6,
+    "status": "Slightly Polluted",
+    "alert_type": "Historical"
+  },
+  {
+    "station_name": "Sungai Gombak",
+    "date": "2026-04-16",
+    "wqi": 80.53,
+    "status": "Slightly Polluted",
+    "alert_type": "Forecast"
+  },
+  {
+    "station_name": "Sungai Kulim",
+    "date": "2026-08-13",
+    "wqi": 80.92,
+    "status": "Slightly Polluted",
+    "alert_type": "Forecast"
+  }
+]

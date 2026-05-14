@@ -1,0 +1,184 @@
+{
+  "generated_at_utc": "2026-04-08T05:24:56.853644+00:00",
+  "source_csvs": [
+    "datasets\\by_river\\sample_water_quality\\Sungai Kulim.csv",
+    "datasets\\by_river\\sample_water_quality\\Sungai Perak.csv",
+    "datasets\\by_river\\sample_water_quality\\Sungai Pinang.csv"
+  ],
+  "preprocessed_rows": 1184,
+  "random_forest_classification": {
+    "accuracy": 0.9551451187335093,
+    "precision_weighted": 0.9535470926586697,
+    "recall_weighted": 0.9551451187335093,
+    "f1_weighted": 0.9530744724164687,
+    "f1_macro": 0.8946973702466261,
+    "labels": [
+      "clean",
+      "slightly_polluted",
+      "polluted"
+    ],
+    "confusion_matrix": [
+      [
+        61,
+        0,
+        0
+      ],
+      [
+        4,
+        282,
+        3
+      ],
+      [
+        0,
+        10,
+        19
+      ]
+    ],
+    "classification_report": {
+      "clean": {
+        "precision": 0.9384615384615385,
+        "recall": 1.0,
+        "f1-score": 0.9682539682539683,
+        "support": 61.0
+      },
+      "slightly_polluted": {
+        "precision": 0.9657534246575342,
+        "recall": 0.9757785467128027,
+        "f1-score": 0.9707401032702238,
+        "support": 289.0
+      },
+      "polluted": {
+        "precision": 0.8636363636363636,
+        "recall": 0.6551724137931034,
+        "f1-score": 0.7450980392156863,
+        "support": 29.0
+      },
+      "accuracy": 0.9551451187335093,
+      "macro avg": {
+        "precision": 0.9226171089184788,
+        "recall": 0.8769836535019687,
+        "f1-score": 0.8946973702466261,
+        "support": 379.0
+      },
+      "weighted avg": {
+        "precision": 0.9535470926586697,
+        "recall": 0.9551451187335093,
+        "f1-score": 0.9530744724164687,
+        "support": 379.0
+      }
+    },
+    "cross_validation": {
+      "fold_accuracy": [
+        0.9486552567237164,
+        0.9217171717171717,
+        0.9551451187335093
+      ],
+      "mean_accuracy": 0.9418391823914658,
+      "std_accuracy": 0.014472987768226298,
+      "n_folds": 3,
+      "n_folds_evaluated": 3,
+      "n_unique_groups": 3
+    },
+    "split_info": {
+      "test_size": 0.2,
+      "train_rows": 805,
+      "test_rows": 379,
+      "group_column": "station_code",
+      "group_disjoint": true
+    },
+    "feature_columns": [
+      "DO",
+      "BOD",
+      "COD",
+      "AN",
+      "TSS",
+      "pH"
+    ]
+  },
+  "lstm_regression": {
+    "mse": 0.04275120591614272,
+    "rmse": 0.2067636474725253,
+    "mae": 0.1592007694372947,
+    "r2": -0.008649454713934412,
+    "r2_vs_test_mean": {
+      "r2": -0.008649454713934412,
+      "r2_sklearn": -0.008649454713934412,
+      "matches_sklearn": true,
+      "mean_y_test": 0.45560938141590834,
+      "ss_res": 22.145124664561926,
+      "ss_tot": 21.955223949278356,
+      "n_points": 518,
+      "formula": "R2 = 1 - sum((y_test - y_pred)^2) / sum((y_test - mean(y_test))^2)"
+    },
+    "baseline": {
+      "strategy": "previous_timestep_wqi",
+      "rmse": 0.29676271551642885,
+      "mae": 0.23783557384144297
+    },
+    "improvement_vs_baseline_pct": {
+      "rmse": 30.326945852104924,
+      "mae": 33.062675668767476
+    },
+    "split_info": {
+      "n_sequences_total": 373,
+      "n_train": 270,
+      "n_val": 29,
+      "n_test": 74,
+      "test_ratio": 0.2,
+      "val_ratio_of_train_val": 0.1,
+      "shuffle_windows": false,
+      "keras_fit_shuffle": false,
+      "station_code_used": "S05",
+      "lag_days": [
+        1,
+        7,
+        30
+      ],
+      "monsoon_features": [
+        "monsoon_ne",
+        "monsoon_sw",
+        "monsoon_other"
+      ],
+      "loss": "huber",
+      "huber_delta": 1.0,
+      "direction_loss_weight": 0.0,
+      "target_wqi_diff": false,
+      "random_seed": 42,
+      "add_month_cyclical": false,
+      "use_bidirectional": true,
+      "extra_param_columns": [],
+      "lstm_units": [
+        64,
+        32
+      ],
+      "dropout": 0.2,
+      "architecture": "2x_bidirectional_lstm",
+      "early_stopping_patience": 10,
+      "seq_len": 30
+    },
+    "final_train_loss": [
+      0.021406322717666626
+    ],
+    "final_val_loss": [
+      0.025052711367607117
+    ],
+    "seq_len": 30,
+    "horizon": 7,
+    "loss_plot_path": "C:\\Users\\irfan\\Downloads\\FYP 2526\\SmartRiver\\ml_models\\lstm\\lstm_training_loss.png",
+    "pred_vs_actual_plot_path": "C:\\Users\\irfan\\Downloads\\FYP 2526\\SmartRiver\\ml_models\\lstm\\lstm_pred_vs_actual_test.png"
+  },
+  "isolation_forest": {
+    "n_samples": 1184,
+    "n_flagged_anomalies": 60,
+    "anomaly_rate": 0.050676,
+    "feature_columns": [
+      "WQI",
+      "DO",
+      "BOD",
+      "COD",
+      "AN",
+      "TSS",
+      "pH"
+    ]
+  }
+}

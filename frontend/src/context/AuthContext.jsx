@@ -1,0 +1,142 @@
+import { createContext, useContext, useState, useCallback, useEffect } from 'react'
+import api from '../api/client'
+
+const AuthContext = createContext(null)
+
+export function AuthProvider({ children }) {
+  const [user, setUser] = useState(() => {
+    try {
+      const stored = localStorage.getItem('smartriver_user')
+      return stored ? JSON.parse(stored) : null
+    } catch {
+      return null
+    }
+  })
+  const [loading, setLoading] = useState(!!localStorage.getItem('smartriver_token'))
+
+  // Validate token on mount and restore user
+  useEffect(() => {
+    const token = localStorage.getItem('smartriver_token')
+    if (!token) {
+      setLoading(false)
+      return
+    }
+    api
+      .get('/auth/me')
+      .then((res) => {
+        const u = res.data
+        setUser({ id: u.id, email: u.email, full_name: u.full_name, role: u.role })
+        localStorage.setItem('smartriver_user', JSON.stringify({ id: u.id, email: u.email, full_name: u.full_name, role: u.role }))
+      })
+      .catch(() => {
+        localStorage.removeItem('smartriver_token')
+        localStorage.removeItem('smartriver_user')
+        setUser(null)
+      })
+      .finally(() => setLoading(false))
+  }, [])
+
+  const login = useCallback(async (email, password) => {
+    const payload = { email, password }
+    console.log('📤 Sending login request', { email, password: password ? '[redacted]' : '' })
+    try {
+      const res = await api.post('/auth/login', payload)
+      const { access_token, user: u } = res.data
+      localStorage.setItem('smartriver_token', access_token)
+      localStorage.setItem('smartriver_user', JSON.stringify(u))
+      setUser(u)
+      console.log('✅ Login response OK', { userId: u?.id, email: u?.email })
+      return u
+    } catch (error) {
+      console.error('❌ Login error:', error.response?.data ?? error.message, error.code ?? '')
+      throw error
+    }
+  }, [])
+
+  const register = useCallback(async (email, password, fullName) => {
+    try {
+      const res = await api.post('/auth/register', { email, password, full_name: fullName || undefined })
+      const data = res.data
+      if (data.requires_verification) {
+        return {
+          requiresVerification: true,
+          email: data.email,
+          message: data.message,
+        }
+      }
+      const { access_token, user: u } = data
+      if (access_token && u) {
+        localStorage.setItem('smartriver_token', access_token)
+        localStorage.setItem('smartriver_user', JSON.stringify(u))
+        setUser(u)
+      }
+      return { requiresVerification: false, user: u }
+    } catch (e) {
+      if (e.code === 'ECONNABORTED') {
+        const timeoutErr = new Error(
+          'Registration is taking too long. Ensure the backend is running and try again.'
+        )
+        timeoutErr.code = 'ECONNABORTED'
+        timeoutErr.isAxiosTimeout = true
+        throw timeoutErr
+      }
+      throw e
+    }
+  }, [])
+
+  const verifyEmail = useCallback(async (email, otp) => {
+    const res = await api.post('/auth/verify-email', {
+      email: (email || '').trim().toLowerCase(),
+      otp: String(otp || '').replace(/\s/g, ''),
+    })
+    const { access_token, user: u } = res.data
+    localStorage.setItem('smartriver_token', access_token)
+    localStorage.setItem('smartriver_user', JSON.stringify(u))
+    setUser(u)
+    return u
+  }, [])
+
+  const resendVerification = useCallback(async (email) => {
+    const res = await api.post('/auth/resend-verification', {
+      email: (email || '').trim().toLowerCase(),
+    })
+    return res.data
+  }, [])
+
+  const logout = useCallback(() => {
+    setUser(null)
+    localStorage.removeItem('smartriver_user')
+    localStorage.removeItem('smartriver_token')
+  }, [])
+
+  useEffect(() => {
+    const onLogout = () => logout()
+    window.addEventListener('smartriver:auth-logout', onLogout)
+    return () => window.removeEventListener('smartriver:auth-logout', onLogout)
+  }, [logout])
+
+  const isAdmin = user?.role === 'admin'
+
+  return (
+    <AuthContext.Provider
+      value={{
+        user,
+        login,
+        register,
+        verifyEmail,
+        resendVerification,
+        logout,
+        isAdmin,
+        loading,
+      }}
+    >
+      {children}
+    </AuthContext.Provider>
+  )
+}
+
+export function useAuth() {
+  const ctx = useContext(AuthContext)
+  if (!ctx) throw new Error('useAuth must be used within AuthProvider')
+  return ctx
+}

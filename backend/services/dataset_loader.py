@@ -1,0 +1,652 @@
+"""
+Load default dataset (Excel or CSV) on backend startup.
+Primary file: datasets/River Monitoring Dataset.xlsx (or .csv). Expected columns include
+Station Name, Date, WQI, River Status, BOD, COD, SS, pH, NH3-N where applicable.
+Values come from the loaded file (or bundled sample) — not from UI copy.
+"""
+from pathlib import Path
+from typing import Optional
+import os
+from datetime import date
+
+from backend.db.repository import status_from_wqi
+from backend.services.river_mapping import RIVER_NAME_BY_STATION_CODE
+
+ROOT = Path(__file__).resolve().parents[2]
+
+import sys
+
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from data_preprocessing.utils.wqi_calculator import (  # noqa: E402
+    MAX_DOE_FORMULA_CSV_YEAR,
+    add_wqi_and_status,
+    normalize_column_names,
+)
+
+# Backward-compatible alias — single source of truth is backend.services.river_mapping.
+STATION_CODE_TO_NAME = RIVER_NAME_BY_STATION_CODE
+
+# Default dataset paths.
+# IMPORTANT: user request — use `sample_water_quality.csv` by default.
+DEFAULT_DATASET_NAME = "River Monitoring Dataset"
+DEFAULT_SAMPLE_CSV = ROOT / "datasets" / "sample_water_quality.csv"
+DEFAULT_DATASET_PATHS = [
+    DEFAULT_SAMPLE_CSV,
+]
+
+def historical_observation_cutoff_year() -> int:
+    """
+    Latest calendar year accepted from CSV files as measured observations with DOE-derived WQI.
+
+    Calendar year 2026 onward is reserved for LSTM forecast outputs (prediction_logs), not CSV rows,
+    so ingestion never exceeds MAX_DOE_FORMULA_CSV_YEAR even when the server clock is in 2026+.
+    """
+    return min(date.today().year, MAX_DOE_FORMULA_CSV_YEAR)
+
+# Station coordinates for real river locations (used when station name is known).
+STATION_COORDINATES = {
+    # Sungai Kulim → Kedah
+    "Sungai Kulim": (5.6710, 100.5660),
+    # Sungai Klang → Selangor
+    "Sungai Klang": (3.1390, 101.6869),
+    # Sungai Gombak → Selangor
+    "Sungai Gombak": (3.2330, 101.7240),
+    # Sungai Perak → Perak
+    "Sungai Perak": (4.5921, 101.0901),
+    # Sungai Pinang → Penang
+    "Sungai Pinang": (5.4141, 100.3288),
+}
+
+# Fallback: Sungai Kulim area (Kedah, Malaysia). Spread other stations around this center for map.
+DEFAULT_MAP_CENTER = (5.364, 100.562)
+# Offsets per station index so markers don't overlap (for stations without explicit coordinates).
+STATION_OFFSETS = [(0, 0), (0.02, 0.01), (-0.02, 0.01), (0.01, -0.02), (-0.01, -0.02), (0.03, 0), (-0.03, 0)]
+
+
+def _normalize_column(df, possible_names, default=None):
+    """Return first matching column name or default."""
+    for name in possible_names:
+        if name in df.columns:
+            return name
+    return default
+
+
+def _is_dataframe_quality_ok(df) -> bool:
+    """
+    Basic quality gate to avoid accepting broken intermediate exports.
+    Requires usable station names and dates.
+    """
+    if df is None or df.empty:
+        return False
+
+    if "station_name" not in df.columns:
+        return False
+    if "date" not in df.columns:
+        return False
+
+    station_col = df["station_name"]
+    date_col = df["date"]
+    # If duplicate column names exist, pandas returns a DataFrame; pick first column.
+    if hasattr(station_col, "columns"):
+        station_col = station_col.iloc[:, 0]
+    if hasattr(date_col, "columns"):
+        date_col = date_col.iloc[:, 0]
+
+    station_series = station_col.astype(str).str.strip()
+    date_series = date_col.astype(str).str.strip()
+
+    # at least some rows with non-empty date
+    if (date_series != "").sum() == 0:
+        return False
+
+    # station names should contain letters for real river/station labels
+    has_alpha = station_series.str.contains(r"[A-Za-z]", regex=True, na=False)
+    if has_alpha.sum() == 0:
+        return False
+
+    return True
+
+
+def _normalize_river_status(val):
+    """Normalize river status to clean | slightly_polluted | polluted from dataset values."""
+    if val is None or (isinstance(val, float) and (val != val)):
+        return None
+    s = str(val).strip().lower()
+    if not s:
+        return None
+    if "clean" in s:
+        return "clean"
+    if "slight" in s or "moderate" in s:
+        return "slightly_polluted"
+    if "pollut" in s:
+        return "polluted"
+    return None
+
+
+def _apply_doe_wqi_for_loaded_frame(df):
+    """
+    --- HISTORICAL WQI (DOE Malaysia, years ≤ MAX_DOE_FORMULA_CSV_YEAR only) ---
+    Apply official sub-index weighting to rows that carry raw parameters; overrides CSV ``WQI`` when present.
+    Rows without any parameter keep existing ``WQI`` if supplied, else 0.
+    """
+    import numpy as np
+    import pandas as pd
+
+    out = normalize_column_names(df.copy())
+    if "TSS" not in out.columns and "SS" in out.columns:
+        out["TSS"] = pd.to_numeric(out["SS"], errors="coerce")
+    if "AN" not in out.columns and "NH3-N" in out.columns:
+        out["AN"] = pd.to_numeric(out["NH3-N"], errors="coerce")
+    param_cols = ["DO", "BOD", "COD", "AN", "TSS", "pH"]
+    for c in param_cols:
+        if c not in out.columns:
+            out[c] = np.nan
+        else:
+            out[c] = pd.to_numeric(out[c], errors="coerce")
+    has_param = out[param_cols].notna().any(axis=1)
+    if has_param.any():
+        sub = out.loc[has_param].drop(columns=["WQI", "river_status"], errors="ignore")
+        sub = add_wqi_and_status(sub, wqi_column="WQI")
+        out.loc[has_param, "WQI"] = sub["WQI"].values
+        out.loc[has_param, "river_status"] = sub["river_status"].values
+    no_param = ~has_param
+    if no_param.any():
+        if "WQI" not in out.columns:
+            out.loc[no_param, "WQI"] = 0.0
+        else:
+            out.loc[no_param, "WQI"] = pd.to_numeric(out.loc[no_param, "WQI"], errors="coerce").fillna(0.0)
+        out.loc[no_param, "river_status"] = out.loc[no_param, "WQI"].apply(
+            lambda w: status_from_wqi(float(w or 0))
+        )
+    return out
+
+
+def load_dataset_dataframe(path: Path):
+    """Load Excel or CSV into pandas DataFrame. Columns: Station Name, Date, WQI, River Status, BOD, COD, SS, pH, NH3-N."""
+    import pandas as pd
+
+    if not path.exists():
+        return None
+
+    if path.suffix.lower() in (".xlsx", ".xls"):
+        # Let pandas select the engine (openpyxl is typical for .xlsx).
+        df = pd.read_excel(path)
+    else:
+        df = pd.read_csv(path)
+
+    if df.empty:
+        return None
+
+    # Normalize columns to match dataset structure: Station Name, Date, WQI, River Status, BOD, COD, SS, pH, NH3-N
+    col_map = {}
+    station_name_col = _normalize_column(
+        df,
+        [
+            # Prefer DOE labels first
+            "SUNGAI",
+            "Sungai",
+            "LOCATION",
+            "location",
+            "Station Name",
+            "Station name",
+            "station_name",
+            "Station",
+            "station",
+            "STATION",
+        ],
+    )
+    station_code_col = _normalize_column(df, ["station_code", "Station Code", "station code", "ID STN (2016)", "ID STN BARU", "ID_STN"])
+    if station_name_col:
+        col_map[station_name_col] = "station_name"
+    if station_code_col:
+        col_map[station_code_col] = "station_code"
+    date_col = _normalize_column(df, ["SMP-DAT", "SMP_DAT", "SMP-DAT\n", "Date", "date", "DATE", "Tarikh"])
+    if date_col:
+        col_map[date_col] = "date"
+    wqi_col = _normalize_column(df, ["WQI", "wqi", "Wqi"])
+    if wqi_col:
+        col_map[wqi_col] = "WQI"
+    status_col = _normalize_column(df, ["River Status", "river_status", "River status", "Status", "status", "RIVER\nSTATUS", "CLASS"])
+    if status_col:
+        col_map[status_col] = "river_status"
+    for orig, new in [("BOD", "BOD"), ("COD", "COD"), ("SS", "SS"), ("TSS", "TSS"), ("pH", "pH"), ("NH3-N", "NH3-N"), ("AN", "AN")]:
+        c = _normalize_column(df, [orig, orig.lower()])
+        if c:
+            col_map[c] = new
+
+    df = df.rename(columns=col_map)
+    # Keep first occurrence when renaming creates duplicate column names
+    # (e.g. existing station_name plus SUNGAI mapped to station_name).
+    if df.columns.duplicated().any():
+        df = df.loc[:, ~df.columns.duplicated()].copy()
+
+    # Ensure required columns: use station_name as primary (full names e.g. Sungai Pinang, Sungai Klang)
+    if "station_name" not in df.columns and station_name_col:
+        df["station_name"] = df[station_name_col].astype(str).str.strip()
+    if "station_name" not in df.columns and "station_code" in df.columns:
+        # Map station codes to names (e.g. sample_water_quality.csv: S01 -> Sungai Klang, S03 -> Sungai Pinang)
+        df["station_name"] = df["station_code"].astype(str).str.strip().map(
+            lambda c: STATION_CODE_TO_NAME.get(c, c)
+        )
+    if "station_name" not in df.columns:
+        df["station_name"] = df.index.astype(str)
+    if "date" not in df.columns and date_col:
+        df["date"] = df[date_col]
+
+    # Drop future CSV rows (2026+): WQI for those years must come from LSTM forecasts only.
+    if "date" in df.columns:
+        dt = pd.to_datetime(df["date"], errors="coerce")
+        keep = dt.notna() & (dt.dt.year <= MAX_DOE_FORMULA_CSV_YEAR)
+        df = df.loc[keep].copy()
+        df["date"] = dt.loc[keep]
+
+    # --- HISTORICAL WQI: official DOE Malaysia formula from raw parameters (2023–2025 in typical datasets) ---
+    df = _apply_doe_wqi_for_loaded_frame(df)
+
+    if "river_status" not in df.columns and status_col:
+        df["river_status"] = df[status_col]
+
+    # Normalize date to string YYYY-MM-DD
+    if "date" in df.columns:
+        d = df["date"]
+        df["date"] = d.apply(lambda x: x.strftime("%Y-%m-%d") if hasattr(x, "strftime") else str(x)[:10])
+
+    # Normalize river status from dataset
+    if "river_status" in df.columns:
+        df["river_status"] = df["river_status"].apply(lambda x: _normalize_river_status(x) or x)
+        # If still object, try WQI-based fallback later in dataframe_to_readings
+
+    return df
+
+
+def dataframe_to_readings(df) -> list[dict]:
+    """Convert DataFrame to list of reading dicts. All values from dataset only."""
+    from backend.services.river_mapping import river_name_for_station
+
+    if df is None or df.empty:
+        return []
+
+    readings = []
+    for _, row in df.iterrows():
+        date_val = row.get("date", row.get("Date", ""))
+        # Always normalize to ISO date string so backend comparisons work.
+        if date_val:
+            if hasattr(date_val, "strftime"):
+                date_val = date_val.strftime("%Y-%m-%d")
+            else:
+                try:
+                    import pandas as pd
+                    parsed = pd.to_datetime(date_val, errors="coerce")
+                    date_val = parsed.strftime("%Y-%m-%d") if parsed is not None and parsed == parsed else str(date_val)[:10]
+                except Exception:
+                    date_val = str(date_val)[:10]
+        else:
+            date_val = ""
+        # Prefer explicit station_code column when present (DOE-style S01..); else fall back to name.
+        raw_code = row.get("station_code")
+        if raw_code is not None and str(raw_code).strip() != "":
+            station_code = str(raw_code).strip()
+        else:
+            station_code = ""
+        station_name = str(row.get("station_name", row.get("Station Name", ""))).strip()
+        if not station_name and station_code:
+            ck = station_code.strip().upper()
+            station_name = STATION_CODE_TO_NAME.get(ck, station_code)
+        if not station_code and station_name:
+            station_code = station_name  # legacy rows without codes
+        if not station_code:
+            station_code = "S01"
+        if not station_name:
+            station_name = "Unknown"
+        wqi = float(row.get("WQI", row.get("wqi", 0)) or 0)
+        status = status_from_wqi(wqi)
+        rn = river_name_for_station(station_code, station_name)
+        readings.append({
+            "station_code": station_code,
+            "station_name": station_name,
+            "river_name": rn,
+            "date": date_val,
+            "wqi": wqi,
+            "river_status": status,
+        })
+    return readings
+
+
+def get_station_coordinates(station_code: str, index: int) -> tuple[float, float]:
+    """Return (lat, lon) for a station (for map).
+
+    If the station matches a key in STATION_COORDINATES,
+    use its real coordinates. Otherwise use the default area + offset by index
+    so markers don't overlap.
+    """
+    from backend.services.river_mapping import river_name_for_station
+
+    name = station_code or ""
+    if name in STATION_COORDINATES:
+        return STATION_COORDINATES[name]
+    rn = river_name_for_station(name, None)
+    if rn in STATION_COORDINATES:
+        return STATION_COORDINATES[rn]
+
+    base_lat, base_lon = DEFAULT_MAP_CENTER
+    off = STATION_OFFSETS[index % len(STATION_OFFSETS)]
+    return (base_lat + off[0], base_lon + off[1])
+
+
+def _dedupe_one_csv_per_river(paths: list[Path]) -> list[Path]:
+    """
+    Keep only one per-river CSV by filename (e.g. one `Sungai Kulim.csv`).
+    If duplicates exist across folders, keep the larger file.
+    """
+    selected: dict[str, Path] = {}
+    for p in paths:
+        key = p.stem.strip().lower() or p.name.strip().lower()
+        current = selected.get(key)
+        if current is None:
+            selected[key] = p
+            continue
+        try:
+            keep_new = p.stat().st_size > current.stat().st_size
+        except OSError:
+            keep_new = False
+        if keep_new:
+            selected[key] = p
+    return sorted(selected.values())
+
+
+def load_default_dataset() -> Optional[object]:
+    """
+    Load default dataset from datasets/River Monitoring Dataset.xlsx (or .csv), else sample CSV.
+    Returns the pandas DataFrame if loaded. All data from file only.
+    """
+    datasets_dir = ROOT / "datasets"
+
+    # First preference: any CSVs under datasets/by_river/**.csv (per-river exports).
+    by_river_dir = datasets_dir / "by_river"
+    if by_river_dir.exists():
+        csvs: list[Path] = [p for p in by_river_dir.rglob("*.csv") if p.is_file()]
+        csvs = _dedupe_one_csv_per_river(csvs)
+        if csvs:
+            frames = []
+            last_err: Optional[str] = None
+            for p in csvs:
+                try:
+                    df = load_dataset_dataframe(p)
+                    if df is not None and not df.empty:
+                        frames.append(df)
+                except Exception as e:
+                    last_err = str(e)
+                    print(f"Dataset loader: failed reading per-river file {p.name}: {e}")
+                    continue
+            if frames:
+                import pandas as pd
+
+                combined = pd.concat(frames, ignore_index=True)
+                if _is_dataframe_quality_ok(combined):
+                    print(f"Dataset loader: selected per-river datasets from {by_river_dir} with combined shape={combined.shape}")
+                    return combined
+                else:
+                    print("Dataset loader: per-river datasets failed quality checks; falling back to root datasets.")
+            elif last_err:
+                print(f"Dataset loader: per-river datasets present but all failed to load. Last error: {last_err}")
+
+    # Candidate order (fallback): always start with sample_water_quality.csv (if present).
+    candidates: list[Path] = []
+    for p in DEFAULT_DATASET_PATHS:
+        if p.exists():
+            candidates.append(p)
+
+    if not candidates:
+        # If sample is missing, fall back to any other dataset file.
+        print("Dataset loader: sample_water_quality.csv missing; falling back to other datasets.")
+        named_csv = ROOT / "datasets" / f"{DEFAULT_DATASET_NAME}.csv"
+        named_xlsx = ROOT / "datasets" / f"{DEFAULT_DATASET_NAME}.xlsx"
+        for p in [named_csv, named_xlsx]:
+            if p.exists():
+                candidates.append(p)
+
+        # Final fallback: newest CSV in datasets/
+        if not candidates and datasets_dir.exists():
+            csvs = sorted([p for p in datasets_dir.glob("*.csv") if p.is_file()], key=lambda x: x.stat().st_mtime, reverse=True)
+            if csvs:
+                candidates.append(csvs[0])
+
+    if not candidates:
+        print("Dataset loader: no dataset file found in datasets/.")
+        return None
+
+    last_err: Optional[str] = None
+    for path in candidates:
+        try:
+            df = load_dataset_dataframe(path)
+            if df is not None and not df.empty:
+                if not _is_dataframe_quality_ok(df):
+                    print(f"Dataset loader: rejected low-quality parse for {path.name}; trying next candidate.")
+                    continue
+                print(f"Dataset loader: selected {path.name} with shape={df.shape}")
+                # If we successfully loaded Excel, also export a CSV copy so future runs
+                # can load without requiring an Excel engine.
+                try:
+                    if path.suffix.lower() in (".xlsx", ".xls"):
+                        csv_path = ROOT / "datasets" / f"{DEFAULT_DATASET_NAME}.csv"
+                        if not csv_path.exists():
+                            df.to_csv(csv_path, index=False)
+                            print(f"Exported CSV copy: {csv_path}")
+                except Exception as e:
+                    print("CSV export skipped:", e)
+                return df
+        except Exception as e:
+            last_err = str(e)
+            print(f"Dataset loader: failed reading {path.name}: {e}")
+            continue
+
+    print(f"Dataset loader: all candidate datasets failed. Last error: {last_err}")
+    return None
+
+
+def reload_default_readings_from_disk() -> dict:
+    """
+    Rebuild in-memory historical readings from current CSVs (by_river + defaults).
+    Used after admin deletes a filesystem dataset so the dashboard matches disk.
+    Does not rerun forecast/alerts (call run_startup_data_load on startup for full refresh).
+    """
+    from backend.db.repository import save_readings
+
+    df = load_default_dataset()
+    if df is None or df.empty:
+        from backend.db.repository import _store
+        _store["readings"].clear()
+        return {"ok": True, "readings_count": 0, "message": "No default dataset on disk"}
+
+    if "date" in df.columns:
+        try:
+            years = df["date"].astype(str).str[:4].astype(int)
+            df = df[years <= historical_observation_cutoff_year()].copy()
+        except (ValueError, TypeError):
+            pass
+    if df.empty:
+        from backend.db.repository import _store
+        _store["readings"].clear()
+        return {"ok": True, "readings_count": 0, "message": "No historical rows after year filter"}
+
+    readings = dataframe_to_readings(df)
+    if not readings:
+        from backend.db.repository import _store
+        _store["readings"].clear()
+        return {"ok": True, "readings_count": 0, "message": "No readings parsed"}
+
+    save_readings(1, readings)
+    return {"ok": True, "readings_count": len(readings), "message": "Readings refreshed from disk"}
+
+
+def _run_forecast_rehydrate_backfill_live_and_optional_anomaly(df_for_anomaly):
+    """
+    Shared tail of startup: forecast UI data, merge SQLite uploads, daily series to today, optional anomaly scan.
+    df_for_anomaly: default-dataset dataframe for heavy anomaly pass, or None if no default file was loaded.
+    """
+    try:
+        from backend.services.forecast_service import run_forecast
+
+        forecast_list = run_forecast()
+        n = len(forecast_list) if isinstance(forecast_list, list) else 0
+        print(f"Forecast points generated for dashboard: {n}")
+    except Exception as e:
+        print("Forecast generation skipped:", e)
+
+    try:
+        from backend.services.upload_ingest import rehydrate_readings_from_registered_uploads
+
+        rehydrate_readings_from_registered_uploads()
+    except Exception as e:
+        print("Upload rehydrate skipped:", e)
+
+    try:
+        from backend.services.backfill_service import run_backfill
+
+        run_backfill()
+    except Exception as e:
+        print("Backfill skipped:", e)
+    try:
+        from backend.services.live_simulation import run_simulated_live_data
+
+        n = run_simulated_live_data()
+        if n > 0:
+            print(f"Simulated live data: generated {n} readings for today.")
+    except Exception as e:
+        print("Live simulation skipped:", e)
+
+    run_heavy = os.environ.get("SMARTRIVER_RUN_HEAVY_STARTUP", "false").strip().lower() == "true"
+    if not run_heavy:
+        print(
+            "Heavy anomaly startup skipped (set SMARTRIVER_RUN_HEAVY_STARTUP=true). "
+            "Daily series backfill + today already applied."
+        )
+        return
+
+    if df_for_anomaly is None:
+        return
+
+    try:
+        import pandas as pd
+
+        dfa = df_for_anomaly.copy()
+        if "station_code" not in dfa.columns and "station_name" in dfa.columns:
+            dfa["station_code"] = dfa["station_name"].astype(str).str.strip()
+        if "TSS" not in dfa.columns and "SS" in dfa.columns:
+            dfa["TSS"] = pd.to_numeric(dfa["SS"], errors="coerce").fillna(0)
+        if "AN" not in dfa.columns and "NH3-N" in dfa.columns:
+            dfa["AN"] = pd.to_numeric(dfa["NH3-N"], errors="coerce").fillna(0)
+        from backend.services.anomaly_service import run_anomaly_detection
+
+        run_anomaly_detection(df=dfa)
+    except Exception:
+        pass
+
+
+def run_startup_data_load():
+    """
+    Load default dataset from file. Observations through the current calendar year are stored (see
+    historical_observation_cutoff_year()). Forecast years in prediction_logs are separate from CSV rows.
+    After load + rehydrate uploads: backfill missing days to yesterday and add today's simulated WQI
+    so the dashboard time series stays continuous and auto-updates with the calendar.
+    """
+    from backend.db.repository import (
+        save_readings,
+        _store,
+        create_station,
+        save_alert,
+        clear_historical_alerts,
+        purge_readings_disallowed_manual_wqi_dates,
+    )
+
+    df = load_default_dataset()
+    if df is None:
+        # No default file on disk — restore from SQLite uploads, then same forecast/series refresh as normal startup.
+        try:
+            from backend.services.upload_ingest import rehydrate_readings_from_registered_uploads
+
+            rehydrate_readings_from_registered_uploads()
+        except Exception as e:
+            print("Upload rehydrate (no default dataset):", e)
+        _run_forecast_rehydrate_backfill_live_and_optional_anomaly(None)
+        return
+
+    # Observations through current year only; later years in CSV are ignored here (forecast handles future).
+    if "date" in df.columns:
+        try:
+            years = df["date"].astype(str).str[:4].astype(int)
+            df = df[years <= historical_observation_cutoff_year()].copy()
+        except (ValueError, TypeError):
+            pass
+    if df.empty:
+        return
+
+    readings = dataframe_to_readings(df)
+    if not readings:
+        return
+
+    save_readings(1, readings)
+    removed = purge_readings_disallowed_manual_wqi_dates()
+    if removed:
+        print(f"Removed {removed} readings dated after manual-WQI cutoff (forecast years use LSTM only).")
+    print(f"Dataset loaded readings count: {len(_store['readings'])}")
+
+    # Ensure each station has coordinates in _store["stations"] for the map
+    seen = set()
+    for i, r in enumerate(readings):
+        code = r.get("station_code") or r.get("station_name", "S01")
+        if code not in seen:
+            seen.add(code)
+            name = r.get("station_name") or code
+            existing = [s for s in _store["stations"] if (s.get("station_code") or "") == code]
+            if not existing:
+                lat, lon = get_station_coordinates(code, len(seen) - 1)
+                try:
+                    create_station(station_code=code, station_name=name, latitude=lat, longitude=lon)
+                except ValueError:
+                    pass
+
+    # Historical alerts: from LATEST record per station only. Trigger when River Status is Slightly Polluted or Polluted.
+    # Clear existing historical alerts so we regenerate from current dataset (forecast alerts are kept).
+    try:
+        from collections import defaultdict
+        clear_historical_alerts()
+        by_station = defaultdict(list)
+        for r in readings:
+            key = r.get("station_name") or r.get("station_code")
+            if key:
+                by_station[key].append(r)
+        for name, rows in by_station.items():
+            rows = sorted(rows, key=lambda x: x.get("date", ""))
+            if not rows:
+                continue
+            latest = rows[-1]
+            date_str = latest.get("date")
+            wqi = float(latest.get("wqi", 0))
+            status = status_from_wqi(wqi)
+            if status not in ("slightly_polluted", "polluted"):
+                continue
+            status_label = "Slightly Polluted" if status == "slightly_polluted" else "Polluted"
+            severity = "warning" if status == "slightly_polluted" else "critical"
+            sc = latest.get("station_code") or name
+            sn = latest.get("station_name") or name
+            rn = latest.get("river_name") or sn
+            msg = f"{rn}: {sn} water quality is {status_label} (WQI: {wqi:.1f}) on {date_str}."
+            save_alert(
+                station_code=sc,
+                station_name=sn,
+                message=msg,
+                severity=severity,
+                wqi=wqi,
+                date_str=date_str,
+                alert_type="historical",
+                river_status=status,
+                parameter_triggered="WQI (latest observation)",
+                trigger_source="historical",
+            )
+    except Exception:
+        pass
+
+    _run_forecast_rehydrate_backfill_live_and_optional_anomaly(df)

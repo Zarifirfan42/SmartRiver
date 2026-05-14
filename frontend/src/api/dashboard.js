@@ -1,0 +1,115 @@
+/**
+ * Dashboard API — All data from dataset (no hardcoding).
+ * Summary, time-series, forecast, stations, anomalies, readings table, years.
+ */
+import api from './client'
+
+export async function getSummary(params = {}) {
+  const { data } = await api.get('/dashboard/summary', { params })
+  return data
+}
+
+export async function getRivers() {
+  const { data } = await api.get('/dashboard/rivers')
+  return data.rivers || []
+}
+
+export async function getTimeSeries(params = {}) {
+  const { data } = await api.get('/dashboard/time-series', { params })
+  return { series: data.series || [], today: data.today || null }
+}
+
+export async function getForecast(params = {}) {
+  const { data } = await api.get('/dashboard/forecast', { params })
+  return { forecast: data.forecast || [], today: data.today || null }
+}
+
+export async function getStations() {
+  const { data } = await api.get('/dashboard/stations')
+  const stations = data.stations || []
+  if (import.meta.env.DEV) console.debug('[SmartRiver] /dashboard/stations:', { count: stations.length })
+  return stations
+}
+
+export async function getAlerts(params = {}) {
+  const { data } = await api.get('/alerts/', { params })
+  return data.items || []
+}
+
+/** Historical alerts (latest first) and Forecast alerts (earliest first). */
+export async function getAlertsByType(params = {}) {
+  const { data } = await api.get('/alerts/by-type', { params })
+  return {
+    historical: data.historical || [],
+    forecast: data.forecast || [],
+  }
+}
+
+/** Persistent SQLite log: anomaly | forecast | historical triggers */
+export async function getAlertHistory(params = {}) {
+  const { data } = await api.get('/alerts/history', { params })
+  return data.items || []
+}
+
+export async function resolveAlertHistory(alertId) {
+  const { data } = await api.patch(`/alerts/history/${alertId}/resolve`)
+  return data
+}
+
+/** Active admin-posted warnings (banner) */
+export async function getActiveWarnings() {
+  const { data } = await api.get('/warnings/active')
+  return data.items || []
+}
+
+/** Prefer API river_name on each station; fallback for legacy rows. */
+export function uniqueRiverNamesFromStations(stations) {
+  const out = new Set()
+  ;(stations || []).forEach((s) => {
+    const n = (s.river_name || '').trim() || (s.station_name || s.station_code || '').trim()
+    if (n) out.add(n)
+  })
+  return [...out].sort()
+}
+
+export async function getAnomalies(params = {}) {
+  const { data } = await api.get('/dashboard/anomalies', { params })
+  return data.anomalies || []
+}
+
+export async function getWqiData(params = {}) {
+  const { data } = await api.get('/dashboard/wqi-data', { params })
+  return data.data || []
+}
+
+export async function getReadingsTable(params = {}) {
+  const { data } = await api.get('/dashboard/readings-table', { params })
+  const rows = data.data || []
+  if (import.meta.env.DEV) console.debug('[SmartRiver] /dashboard/readings-table:', { params, count: rows.length })
+  return rows
+}
+
+export async function getReadingsCount(params = {}) {
+  const { data } = await api.get('/dashboard/readings-count', { params })
+  return data.total ?? 0
+}
+
+export async function getYears() {
+  const { data } = await api.get('/dashboard/years')
+  return data.years || []
+}
+
+export async function getCompareSeries(params = {}) {
+  const { data } = await api.get('/dashboard/compare-series', { params })
+  return data
+}
+
+export async function getWqiCalendar(params = {}) {
+  const { data } = await api.get('/dashboard/wqi-calendar', { params })
+  return data
+}
+
+export async function getParameterContribution(params = {}) {
+  const { data } = await api.get('/dashboard/parameter-contribution', { params })
+  return data
+}

@@ -1,0 +1,2401 @@
+"""
+Database repository — Store and retrieve prediction results, alerts, readings, users.
+Uses in-memory store by default; can be extended to PostgreSQL via database/db_connection.
+Classification: record.date <= today → historical; record.date > today → forecast.
+"""
+from datetime import datetime, date, timedelta
+from typing import Any, Optional
+import json
+import logging
+import os
+import sqlite3
+from pathlib import Path
+
+logger = logging.getLogger(__name__)
+
+from backend.services.river_mapping import (
+    coming_soon_station_templates,
+    forecast_point_matches_river,
+    normalize_station_code,
+    reading_matches_river,
+    river_name_for_station,
+)
+
+
+def _today_str() -> str:
+    """Current system date (YYYY-MM-DD) for classifying historical vs forecast."""
+    return date.today().isoformat()
+
+
+# Policy cap: forecasts and forecast-derived metrics never extend past this date (no 2027+ in UI/API).
+FORECAST_PLANNING_END = "2026-12-31"
+# Forecast table/count must load enough points before date/month filters; do not pre-truncate to page size.
+FORECAST_READINGS_QUERY_CAP = 100_000
+
+
+def purge_readings_disallowed_manual_wqi_dates() -> int:
+    """
+    Remove any in-memory readings dated after MAX_DOE_FORMULA_CSV_YEAR (must use LSTM forecast only).
+    Returns number of rows removed.
+    """
+    before = len(_store["readings"])
+    _store["readings"] = [
+        r
+        for r in _store["readings"]
+        if _reading_date_allows_stored_manual_wqi(str(r.get("reading_date") or ""))
+    ]
+    return before - len(_store["readings"])
+
+
+def _reading_date_allows_stored_manual_wqi(reading_date: str) -> bool:
+    """
+    Policy: in-memory ``readings`` may only store formula-derived (or file) WQI for dates
+    in MAX_DOE_FORMULA_CSV_YEAR and earlier. Later years are reserved for LSTM forecast logs.
+    """
+    s = (reading_date or "")[:10]
+    if len(s) < 4:
+        return True
+    try:
+        from data_preprocessing.utils.wqi_calculator import MAX_DOE_FORMULA_CSV_YEAR
+
+        return int(s[:4]) <= MAX_DOE_FORMULA_CSV_YEAR
+    except ValueError:
+        return True
+
+
+def status_from_wqi(wqi: float) -> str:
+    """
+    WQI → monitoring status (single source of truth for alerts and summaries).
+    >= 81: Clean; 60 <= WQI < 81: Slightly Polluted; else: Polluted.
+    """
+    try:
+        w = float(wqi)
+    except (TypeError, ValueError):
+        w = 0.0
+    if w >= 81:
+        return "clean"
+    if w >= 60:
+        return "slightly_polluted"
+    return "polluted"
+
+
+def _canonical_station_key(r: dict) -> str:
+    """One group per station: prefer station_code, else station_name."""
+    code = (r.get("station_code") or "").strip()
+    name = (r.get("station_name") or "").strip()
+    return code or name or ""
+
+# In-memory store (mirrors DB tables). Replace with SQL when DATABASE_URL is set.
+_store = {
+    "users": [],
+    "datasets": [],
+    "readings": [],       # WQI time series for dashboard
+    "prediction_logs": [],
+    "alerts": [],
+    "stations": [],       # river_stations (admin-managed)
+    "_id": {"users": 1, "datasets": 1, "readings": 1, "prediction_logs": 1, "alerts": 1, "stations": 1},
+}
+
+
+def get_clean_historical_readings() -> list[dict]:
+    """
+    Single source for in-store monitoring data used by Overview, River Health, summaries, and the
+    default dataset table: reading_date <= today, excluding rows tagged data_type=='forecast'.
+    ML forecast points stay in prediction_logs only, not here.
+    """
+    today = _today_str()
+    out: list[dict] = []
+    for r in _store["readings"]:
+        if (r.get("reading_date") or "") > today:
+            continue
+        if (r.get("data_type") or "historical").strip().lower() == "forecast":
+            continue
+        out.append(r)
+    return out
+
+_SQLITE_PATH = os.environ.get("SMARTRIVER_SQLITE_PATH") or str(
+    Path(__file__).resolve().parent / "smartriver.sqlite3"
+)
+
+
+def _sqlite_conn() -> sqlite3.Connection:
+    """
+    SQLite connection for persistent auth/user data.
+    We keep analytics/readings in-memory for now, but users must persist across restarts.
+    """
+    # Ensure directory exists and use a timeout to reduce "database is locked" errors
+    # when frontend and backend perform near-simultaneous auth writes.
+    sqlite_path = Path(_SQLITE_PATH)
+    sqlite_path.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(str(sqlite_path), timeout=15, check_same_thread=False)
+    try:
+        conn.execute("PRAGMA journal_mode=WAL;")
+        conn.execute("PRAGMA synchronous=NORMAL;")
+    except Exception:
+        # Keep auth functional even if PRAGMA is not supported in current environment.
+        pass
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+def verify_auth_database_connection() -> str:
+    """
+    Open SQLite and ping. Call once at API startup.
+    Returns resolved DB path for logging.
+    """
+    path = str(Path(_SQLITE_PATH).resolve())
+    with _sqlite_conn() as conn:
+        conn.execute("SELECT 1").fetchone()
+    print(f"✅ Database connected (SQLite): {path}")
+    return path
+
+
+def _ensure_sqlite_schema() -> None:
+    """Create/migrate SQLite tables (users, datasets, monitoring records, export audit)."""
+    with _sqlite_conn() as conn:
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS users (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              email TEXT NOT NULL UNIQUE,
+              password_hash TEXT NOT NULL,
+              full_name TEXT NULL,
+              role TEXT NOT NULL DEFAULT 'public',
+              is_active INTEGER NOT NULL DEFAULT 1,
+              created_at TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS feedback_reports (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              user_id INTEGER NULL,
+              name TEXT NULL,
+              email TEXT NOT NULL,
+              message TEXT NOT NULL,
+              created_at TEXT NOT NULL,
+              is_read INTEGER NOT NULL DEFAULT 0,
+              read_at TEXT NULL
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS uploaded_datasets (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              name TEXT NOT NULL,
+              file_path TEXT NOT NULL,
+              file_size_bytes INTEGER NOT NULL DEFAULT 0,
+              row_count INTEGER NOT NULL DEFAULT 0,
+              uploaded_by INTEGER NOT NULL DEFAULT 1,
+              created_at TEXT NOT NULL,
+              river_name TEXT NULL,
+              station_codes_seen TEXT NULL,
+              river_validation_warnings TEXT NULL
+            )
+            """
+        )
+        # --- Persistent water-quality rows (MySQL-equivalent dataset store; SQLite here) ---
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS water_quality_records (
+              record_id INTEGER PRIMARY KEY AUTOINCREMENT,
+              date TEXT NOT NULL,
+              station_code TEXT NOT NULL,
+              station_name TEXT,
+              "DO" REAL,
+              BOD REAL,
+              COD REAL,
+              AN REAL,
+              SS REAL,
+              pH REAL,
+              WQI REAL,
+              pollution_status TEXT,
+              data_source TEXT,
+              is_predicted INTEGER NOT NULL DEFAULT 0,
+              dataset_id INTEGER,
+              created_at TEXT NOT NULL,
+              UNIQUE(date, station_code)
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS export_logs (
+              export_id INTEGER PRIMARY KEY AUTOINCREMENT,
+              user_id INTEGER NOT NULL,
+              export_timestamp TEXT NOT NULL,
+              format TEXT NOT NULL,
+              data_range TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_wqr_date ON water_quality_records(date)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_wqr_station ON water_quality_records(station_code)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_wqr_predicted ON water_quality_records(is_predicted)"
+        )
+
+        user_cols = {r["name"] for r in conn.execute("PRAGMA table_info(users)").fetchall()}
+        if "username" not in user_cols:
+            # SQLite cannot ADD COLUMN ... UNIQUE; enforce uniqueness with a partial index.
+            conn.execute("ALTER TABLE users ADD COLUMN username TEXT")
+            conn.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_users_username_unique "
+                "ON users(username) WHERE username IS NOT NULL AND trim(username) != ''"
+            )
+        if "last_login_date" not in user_cols:
+            conn.execute("ALTER TABLE users ADD COLUMN last_login_date TEXT NULL")
+        user_cols = {r["name"] for r in conn.execute("PRAGMA table_info(users)").fetchall()}
+        if "email_verified" not in user_cols:
+            conn.execute(
+                "ALTER TABLE users ADD COLUMN email_verified INTEGER NOT NULL DEFAULT 1"
+            )
+
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS auth_email_otp (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              email_lower TEXT NOT NULL,
+              purpose TEXT NOT NULL,
+              otp_hash TEXT NOT NULL,
+              expires_at TEXT NOT NULL,
+              created_at TEXT NOT NULL,
+              UNIQUE(email_lower, purpose)
+            )
+            """
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_auth_otp_email ON auth_email_otp(email_lower)"
+        )
+
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS alert_event_log (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              triggered_at TEXT NOT NULL,
+              station_code TEXT,
+              station_name TEXT,
+              severity TEXT NOT NULL DEFAULT 'medium',
+              parameter_triggered TEXT,
+              wqi_value REAL,
+              status TEXT NOT NULL DEFAULT 'active',
+              message TEXT,
+              source TEXT,
+              in_memory_alert_id INTEGER
+            )
+            """
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_alert_log_time ON alert_event_log(triggered_at DESC)"
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS admin_warnings (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              message TEXT NOT NULL,
+              created_by_user_id INTEGER,
+              created_at TEXT NOT NULL,
+              is_active INTEGER NOT NULL DEFAULT 1
+            )
+            """
+        )
+
+        cols = {
+            r["name"]
+            for r in conn.execute("PRAGMA table_info(feedback_reports)").fetchall()
+        }
+        if "is_read" not in cols:
+            conn.execute(
+                "ALTER TABLE feedback_reports ADD COLUMN is_read INTEGER NOT NULL DEFAULT 0"
+            )
+        if "read_at" not in cols:
+            conn.execute(
+                "ALTER TABLE feedback_reports ADD COLUMN read_at TEXT NULL"
+            )
+
+        # Backfill username from email local-part where missing (stable handle for RBAC audit).
+        for row in conn.execute(
+            "SELECT id, email, username FROM users WHERE username IS NULL OR trim(username) = ''"
+        ).fetchall():
+            em = (row["email"] or "").strip()
+            base = em.split("@", 1)[0].lower() if "@" in em else em.lower()
+            base = "".join(c for c in base if c.isalnum() or c in "._-") or f"user{row['id']}"
+            uname = base
+            n = 0
+            while True:
+                clash = conn.execute(
+                    "SELECT 1 FROM users WHERE lower(username) = lower(?) AND id != ?",
+                    (uname, row["id"]),
+                ).fetchone()
+                if not clash:
+                    break
+                n += 1
+                uname = f"{base}{n}"
+            conn.execute("UPDATE users SET username = ? WHERE id = ?", (uname, row["id"]))
+        conn.commit()
+
+
+_ensure_sqlite_schema()
+
+
+def _next_id(table: str) -> int:
+    n = _store["_id"][table]
+    _store["_id"][table] += 1
+    return n
+
+
+def save_dataset(
+    name: str,
+    file_path: str,
+    file_size: int,
+    row_count: int,
+    uploaded_by: int = 1,
+    river_name: Optional[str] = None,
+    station_codes_seen: Optional[list[str]] = None,
+    river_validation_warnings: Optional[list[str]] = None,
+) -> dict:
+    """
+    Register an uploaded or processed dataset.
+
+    river_name: human-facing label (e.g. \"Sungai Klang\") derived from station_code mapping at upload.
+    station_codes_seen: distinct codes found in CSV (audit / examiner traceability).
+    river_validation_warnings: e.g. unknown station codes mapped to Unknown River.
+    """
+    with _sqlite_conn() as conn:
+        cur = conn.execute(
+            """
+            INSERT INTO uploaded_datasets
+            (name, file_path, file_size_bytes, row_count, uploaded_by, created_at, river_name, station_codes_seen, river_validation_warnings)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                name,
+                file_path,
+                int(file_size or 0),
+                int(row_count or 0),
+                int(uploaded_by or 1),
+                datetime.utcnow().isoformat(),
+                river_name,
+                json.dumps(list(station_codes_seen or [])),
+                json.dumps(list(river_validation_warnings or [])),
+            ),
+        )
+        dataset_id = int(cur.lastrowid)
+
+    row = {
+        "id": dataset_id,
+        "name": name,
+        "file_path": file_path,
+        "file_size_bytes": file_size,
+        "row_count": row_count,
+        "uploaded_by": uploaded_by,
+        "created_at": datetime.utcnow().isoformat(),
+    }
+    if river_name:
+        row["river_name"] = river_name
+    if station_codes_seen is not None:
+        row["station_codes_seen"] = list(station_codes_seen)
+    if river_validation_warnings is not None:
+        row["river_validation_warnings"] = list(river_validation_warnings)
+    _store["datasets"].append(row)
+    return row
+
+
+def find_uploaded_dataset_id_by_filename(name: str) -> Optional[int]:
+    """Return latest SQLite id for an upload with the same filename (case-insensitive), or None."""
+    norm = (name or "").strip().lower()
+    if not norm:
+        return None
+    with _sqlite_conn() as conn:
+        row = conn.execute(
+            "SELECT id FROM uploaded_datasets WHERE lower(name) = ? ORDER BY id DESC LIMIT 1",
+            (norm,),
+        ).fetchone()
+    return int(row["id"]) if row else None
+
+
+def list_uploaded_datasets(limit: int = 2000) -> list[dict]:
+    """Persistent dataset metadata list, newest first."""
+    lim = max(1, min(int(limit), 5000))
+    with _sqlite_conn() as conn:
+        rows = conn.execute(
+            """
+            SELECT id, name, file_path, file_size_bytes, row_count, uploaded_by, created_at,
+                   river_name, station_codes_seen, river_validation_warnings
+            FROM uploaded_datasets
+            ORDER BY id DESC
+            LIMIT ?
+            """,
+            (lim,),
+        ).fetchall()
+    items: list[dict] = []
+    for r in rows:
+        try:
+            codes = json.loads(r["station_codes_seen"] or "[]")
+        except Exception:
+            codes = []
+        try:
+            warns = json.loads(r["river_validation_warnings"] or "[]")
+        except Exception:
+            warns = []
+        items.append({
+            "id": r["id"],
+            "name": r["name"],
+            "file_path": r["file_path"],
+            "file_size_bytes": r["file_size_bytes"],
+            "row_count": r["row_count"],
+            "uploaded_by": r["uploaded_by"],
+            "created_at": r["created_at"],
+            "river_name": r["river_name"],
+            "station_codes_seen": codes,
+            "river_validation_warnings": warns,
+        })
+    _store["datasets"] = list(reversed(items))
+    return items
+
+
+def remove_readings_by_river_label(river_label: str) -> int:
+    """
+    Drop readings whose river_name matches river_label (case-insensitive).
+    Returns number of rows removed.
+    """
+    label = (river_label or "").strip().lower()
+    if not label:
+        return 0
+    before = len(_store["readings"])
+    _store["readings"] = [
+        r for r in _store["readings"]
+        if (str(r.get("river_name") or "").strip().lower() != label)
+    ]
+    return before - len(_store["readings"])
+
+
+def delete_dataset(dataset_id: int) -> dict:
+    """
+    Delete dataset metadata and its linked in-memory readings.
+    Returns counts for admin UI feedback.
+    """
+    did = int(dataset_id)
+    with _sqlite_conn() as conn:
+        row = conn.execute(
+            """
+            SELECT id, name, file_path, file_size_bytes, row_count, uploaded_by, created_at,
+                   river_name, station_codes_seen, river_validation_warnings
+            FROM uploaded_datasets
+            WHERE id = ?
+            """,
+            (did,),
+        ).fetchone()
+        if not row:
+            raise ValueError("Dataset not found")
+        conn.execute("DELETE FROM uploaded_datasets WHERE id = ?", (did,))
+
+    ds = {
+        "id": row["id"],
+        "name": row["name"],
+        "file_path": row["file_path"],
+        "file_size_bytes": row["file_size_bytes"],
+        "row_count": row["row_count"],
+        "uploaded_by": row["uploaded_by"],
+        "created_at": row["created_at"],
+        "river_name": row["river_name"],
+    }
+    _store["datasets"] = [d for d in _store["datasets"] if int(d.get("id", -1)) != did]
+    before = len(_store["readings"])
+    _store["readings"] = [r for r in _store["readings"] if int(r.get("dataset_id") or -1) != did]
+    removed_readings = before - len(_store["readings"])
+    return {
+        "dataset": ds,
+        "removed_readings": removed_readings,
+    }
+
+
+def migrate_store_river_names() -> None:
+    """
+    Backfill river_name on readings and dataset records created before river-centric fields existed.
+    Safe to call on every startup (idempotent for rows that already have river_name).
+    """
+    for r in _store["readings"]:
+        if not r.get("river_name"):
+            r["river_name"] = river_name_for_station(r.get("station_code"), r.get("station_name"))
+    for d in _store["datasets"]:
+        if d.get("river_name"):
+            continue
+        did = d.get("id")
+        subs = [r for r in _store["readings"] if r.get("dataset_id") == did]
+        if subs:
+            rivers = sorted({river_name_for_station(x.get("station_code"), x.get("station_name")) for x in subs})
+            d["river_name"] = rivers[0] if len(rivers) == 1 else "Multiple rivers"
+        else:
+            d["river_name"] = None
+
+
+# ---------- Users (for auth) ----------
+def get_user_by_id(user_id: int) -> Optional[dict]:
+    """Get user by primary key."""
+    try:
+        uid = int(user_id)
+    except (TypeError, ValueError):
+        return None
+    with _sqlite_conn() as conn:
+        row = conn.execute(
+            "SELECT id, email, username, password_hash, full_name, role, is_active, created_at, last_login_date, email_verified FROM users WHERE id = ?",
+            (uid,),
+        ).fetchone()
+        if not row:
+            return None
+        return dict(row)
+
+
+def get_user_by_email(email: str) -> Optional[dict]:
+    """Get user by email (case-insensitive)."""
+    email_lower = (email or "").strip().lower()
+    if not email_lower:
+        return None
+    with _sqlite_conn() as conn:
+        row = conn.execute(
+            "SELECT id, email, username, password_hash, full_name, role, is_active, created_at, last_login_date, email_verified FROM users WHERE lower(email) = ?",
+            (email_lower,),
+        ).fetchone()
+        if not row:
+            return None
+        return dict(row)
+
+
+def create_user(
+    email: str,
+    password_hash: str,
+    full_name: Optional[str] = None,
+    role: str = "public",
+    username: Optional[str] = None,
+    email_verified: bool = True,
+) -> dict:
+    """Create a new user. Passwords must be bcrypt hashes (see auth_service). Returns the created user dict."""
+    if get_user_by_email(email):
+        raise ValueError("Email already registered")
+    email_norm = (email or "").strip().lower()
+    if not email_norm:
+        raise ValueError("Email required")
+    role_norm = role if role in ("admin", "public") else "public"
+    created_at = datetime.utcnow().isoformat()
+    ev = 1 if email_verified else 0
+    uname_raw = (username or "").strip() or email_norm.split("@", 1)[0]
+    uname_norm = "".join(c for c in uname_raw.lower() if c.isalnum() or c in "._-") or "user"
+    with _sqlite_conn() as conn:
+        clash = conn.execute(
+            "SELECT id FROM users WHERE lower(username) = lower(?)",
+            (uname_norm,),
+        ).fetchone()
+        if clash:
+            uname_norm = f"{uname_norm}_{created_at[:10].replace('-', '')}"
+        try:
+            cur = conn.execute(
+                """
+                INSERT INTO users (email, username, password_hash, full_name, role, is_active, created_at, email_verified)
+                VALUES (?, ?, ?, ?, ?, 1, ?, ?)
+                """,
+                (
+                    email_norm,
+                    uname_norm,
+                    password_hash,
+                    (full_name or "").strip() or None,
+                    role_norm,
+                    created_at,
+                    ev,
+                ),
+            )
+        except sqlite3.IntegrityError:
+            raise ValueError("Email already registered")
+        user_id = int(cur.lastrowid)
+    return {
+        "id": user_id,
+        "email": email_norm,
+        "username": uname_norm,
+        "password_hash": password_hash,
+        "full_name": (full_name or "").strip() or None,
+        "role": role_norm,
+        "is_active": 1,
+        "created_at": created_at,
+        "last_login_date": None,
+        "email_verified": ev,
+    }
+
+
+def update_last_login(user_id: int) -> None:
+    """Record successful authentication time (ISO UTC string)."""
+    try:
+        uid = int(user_id)
+    except (TypeError, ValueError):
+        return
+    ts = datetime.utcnow().isoformat()
+    with _sqlite_conn() as conn:
+        conn.execute("UPDATE users SET last_login_date = ? WHERE id = ?", (ts, uid))
+
+
+def delete_user_by_email(email: str) -> bool:
+    """Remove user row by email (rollback path after failed verification email)."""
+    email_lower = (email or "").strip().lower()
+    if not email_lower:
+        return False
+    with _sqlite_conn() as conn:
+        cur = conn.execute("DELETE FROM users WHERE lower(email) = ?", (email_lower,))
+        conn.execute("DELETE FROM auth_email_otp WHERE email_lower = ?", (email_lower,))
+        return cur.rowcount > 0
+
+
+def set_user_email_verified(user_id: int, verified: bool) -> bool:
+    """Mark email as verified (1) or not (0)."""
+    try:
+        uid = int(user_id)
+    except (TypeError, ValueError):
+        return False
+    v = 1 if verified else 0
+    with _sqlite_conn() as conn:
+        cur = conn.execute("UPDATE users SET email_verified = ? WHERE id = ?", (v, uid))
+        return cur.rowcount > 0
+
+
+AUTH_OTP_PURPOSE_VERIFY = "verify_email"
+AUTH_OTP_PURPOSE_RESET = "password_reset"
+
+
+def upsert_auth_otp(email: str, purpose: str, otp_hash: str, expires_at_iso: str) -> None:
+    """
+    Replace OTP for email+purpose (single active code per flow).
+
+    Stored in SQLite table ``auth_email_otp``: email_lower, purpose (verify_email |
+    password_reset), otp_hash (bcrypt of the 6-digit code), expires_at (ISO UTC),
+    created_at. Verification consumes/deletes the row (equivalent to is_used=True).
+    """
+    email_lower = (email or "").strip().lower()
+    if not email_lower or purpose not in (AUTH_OTP_PURPOSE_VERIFY, AUTH_OTP_PURPOSE_RESET):
+        raise ValueError("Invalid OTP save parameters")
+    created_at = datetime.utcnow().isoformat()
+    with _sqlite_conn() as conn:
+        conn.execute("DELETE FROM auth_email_otp WHERE email_lower = ? AND purpose = ?", (email_lower, purpose))
+        conn.execute(
+            """
+            INSERT INTO auth_email_otp (email_lower, purpose, otp_hash, expires_at, created_at)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (email_lower, purpose, otp_hash, expires_at_iso, created_at),
+        )
+
+
+def get_auth_otp_row(email: str, purpose: str) -> Optional[dict]:
+    email_lower = (email or "").strip().lower()
+    if not email_lower:
+        return None
+    with _sqlite_conn() as conn:
+        row = conn.execute(
+            """
+            SELECT email_lower, purpose, otp_hash, expires_at, created_at
+            FROM auth_email_otp WHERE email_lower = ? AND purpose = ?
+            """,
+            (email_lower, purpose),
+        ).fetchone()
+        return dict(row) if row else None
+
+
+def delete_auth_otp_row(email: str, purpose: str) -> None:
+    email_lower = (email or "").strip().lower()
+    if not email_lower:
+        return
+    with _sqlite_conn() as conn:
+        conn.execute(
+            "DELETE FROM auth_email_otp WHERE email_lower = ? AND purpose = ?",
+            (email_lower, purpose),
+        )
+
+
+def record_export_log(user_id: int, export_format: str, data_range: str) -> dict:
+    """Audit row for PDF/CSV (or other) exports."""
+    ts = datetime.utcnow().isoformat()
+    fmt = (export_format or "").strip().upper()[:16]
+    dr = (data_range or "").strip()[:512]
+    with _sqlite_conn() as conn:
+        cur = conn.execute(
+            """
+            INSERT INTO export_logs (user_id, export_timestamp, format, data_range)
+            VALUES (?, ?, ?, ?)
+            """,
+            (int(user_id), ts, fmt, dr),
+        )
+        eid = int(cur.lastrowid)
+    return {"export_id": eid, "user_id": user_id, "export_timestamp": ts, "format": fmt, "data_range": dr}
+
+
+def list_export_logs(limit: int = 200) -> list[dict]:
+    """Admin audit: recent export actions."""
+    lim = max(1, min(int(limit), 2000))
+    with _sqlite_conn() as conn:
+        rows = conn.execute(
+            """
+            SELECT export_id, user_id, export_timestamp, format, data_range
+            FROM export_logs
+            ORDER BY export_id DESC
+            LIMIT ?
+            """,
+            (lim,),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def upsert_water_quality_records(rows: list[dict]) -> int:
+    """
+    Insert or replace monitoring rows; composite unique key (date, station_code).
+    Each dict: date, station_code, station_name, DO, BOD, COD, AN, SS, pH, WQI,
+    pollution_status, data_source, is_predicted (bool), dataset_id (optional).
+    """
+    if not rows:
+        return 0
+    now = datetime.utcnow().isoformat()
+    n = 0
+    with _sqlite_conn() as conn:
+        for r in rows:
+            d = str(r.get("date") or "")[:10]
+            sc = str(r.get("station_code") or "").strip()
+            if len(d) < 10 or not sc:
+                continue
+            sn = r.get("station_name")
+            sn = str(sn).strip() if sn is not None else None
+
+            def _f(key: str) -> Optional[float]:
+                v = r.get(key)
+                if v is None or v == "":
+                    return None
+                try:
+                    return float(v)
+                except (TypeError, ValueError):
+                    return None
+
+            is_pred = 1 if r.get("is_predicted") else 0
+            did = r.get("dataset_id")
+            try:
+                did_i = int(did) if did is not None else None
+            except (TypeError, ValueError):
+                did_i = None
+            conn.execute(
+                """
+                INSERT INTO water_quality_records (
+                  date, station_code, station_name,
+                  "DO", BOD, COD, AN, SS, pH, WQI,
+                  pollution_status, data_source, is_predicted, dataset_id, created_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(date, station_code) DO UPDATE SET
+                  station_name = excluded.station_name,
+                  "DO" = excluded."DO",
+                  BOD = excluded.BOD,
+                  COD = excluded.COD,
+                  AN = excluded.AN,
+                  SS = excluded.SS,
+                  pH = excluded.pH,
+                  WQI = excluded.WQI,
+                  pollution_status = excluded.pollution_status,
+                  data_source = excluded.data_source,
+                  is_predicted = excluded.is_predicted,
+                  dataset_id = excluded.dataset_id,
+                  created_at = excluded.created_at
+                """,
+                (
+                    d,
+                    sc,
+                    sn,
+                    _f("DO"),
+                    _f("BOD"),
+                    _f("COD"),
+                    _f("AN"),
+                    _f("SS"),
+                    _f("pH"),
+                    _f("WQI"),
+                    (r.get("pollution_status") or None),
+                    (r.get("data_source") or "unknown"),
+                    is_pred,
+                    did_i,
+                    now,
+                ),
+            )
+            n += 1
+        conn.commit()
+    return n
+
+
+def _attach_forecast_confidence_interval(point: dict) -> dict:
+    """Add illustrative upper/lower bounds when the ML engine does not emit native intervals."""
+    d = dict(point)
+    try:
+        w = float(d.get("wqi") or 0)
+    except (TypeError, ValueError):
+        w = 0.0
+    half = min(12.0, max(3.0, 0.08 * max(w, 1.0)))
+    d["wqi_lower"] = round(max(0.0, w - half), 2)
+    d["wqi_upper"] = round(min(100.0, w + half), 2)
+    d["ci_method"] = "envelope"
+    d["ci_note"] = (
+        "Illustrative band: ±8% of WQI (floor ±3, ceiling ±12) when native LSTM intervals are unavailable."
+    )
+    return d
+
+
+def _parse_iso_date(s: str) -> Optional[date]:
+    s = (s or "")[:10]
+    if len(s) != 10:
+        return None
+    try:
+        return date.fromisoformat(s)
+    except ValueError:
+        return None
+
+
+def _coverage_range_label(dmin: str, dmax: str) -> str:
+    a = _parse_iso_date(dmin)
+    b = _parse_iso_date(dmax)
+    if not a or not b:
+        return ""
+    return f"{a.strftime('%b %Y')}–{b.strftime('%b %Y')}"
+
+
+def _station_coverage_from_readings() -> dict[str, dict]:
+    """Per canonical station key: coverage % = distinct reading days / span length (inclusive)."""
+    from collections import defaultdict
+
+    by_key: dict[str, list[str]] = defaultdict(list)
+    for r in get_clean_historical_readings():
+        k = _canonical_station_key(r)
+        if not k:
+            continue
+        ds = (r.get("reading_date") or "")[:10]
+        if len(ds) == 10:
+            by_key[k].append(ds)
+    out: dict[str, dict] = {}
+    for k, raw_dates in by_key.items():
+        dates = sorted({d for d in raw_dates if len(d) == 10})
+        if not dates:
+            continue
+        dmin_s, dmax_s = dates[0], dates[-1]
+        d0 = _parse_iso_date(dmin_s)
+        d1 = _parse_iso_date(dmax_s)
+        if not d0 or not d1:
+            continue
+        span_days = (d1 - d0).days + 1
+        distinct = len(dates)
+        pct = round(100.0 * distinct / span_days, 1) if span_days > 0 else 0.0
+        out[k] = {
+            "data_coverage_pct": min(100.0, pct),
+            "data_coverage_days": distinct,
+            "data_coverage_span_days": span_days,
+            "data_coverage_date_from": dmin_s,
+            "data_coverage_date_to": dmax_s,
+            "data_coverage_range_label": _coverage_range_label(dmin_s, dmax_s),
+        }
+    return out
+
+
+def get_water_quality_measured_row(station_code: str, date_str: str) -> Optional[dict]:
+    """One SQLite row (prefer measured) for parameter breakdown."""
+    code = normalize_station_code(station_code)
+    d = (date_str or "")[:10]
+    if not code or len(d) != 10:
+        return None
+    with _sqlite_conn() as conn:
+        conn.row_factory = sqlite3.Row
+        row = conn.execute(
+            """
+            SELECT date, station_code, station_name, "DO", BOD, COD, AN, SS, pH, WQI, pollution_status
+            FROM water_quality_records
+            WHERE upper(trim(station_code)) = ? AND date = ?
+            ORDER BY is_predicted ASC, record_id DESC
+            LIMIT 1
+            """,
+            (code, d),
+        ).fetchone()
+    if not row:
+        return None
+    return dict(row)
+
+
+def _safe_float(v: Any) -> Optional[float]:
+    if v is None or v == "":
+        return None
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return None
+
+
+def _raw_parameter_stress(row: dict) -> dict[str, float]:
+    """Higher = more stress on WQI (heuristic, for relative contribution only)."""
+    raw: dict[str, float] = {}
+    do = _safe_float(row.get("DO"))
+    if do is not None:
+        ideal = 7.0
+        raw["DO"] = max(0.0, min(100.0, 100.0 * max(0.0, ideal - do) / ideal))
+    bod = _safe_float(row.get("BOD"))
+    if bod is not None:
+        raw["BOD"] = max(0.0, min(100.0, bod * 5.0))
+    cod = _safe_float(row.get("COD"))
+    if cod is not None:
+        raw["COD"] = max(0.0, min(100.0, cod * 2.0))
+    an = _safe_float(row.get("AN"))
+    if an is not None:
+        raw["AN_NH3"] = max(0.0, min(100.0, an * 50.0))
+    ss = _safe_float(row.get("SS"))
+    if ss is not None:
+        raw["SS"] = max(0.0, min(100.0, ss / 2.0))
+    ph = _safe_float(row.get("pH"))
+    if ph is not None:
+        raw["pH"] = max(0.0, min(100.0, abs(ph - 7.0) * 20.0))
+    return raw
+
+
+def get_parameter_contribution_breakdown(station_code: str, date_str: str) -> dict:
+    """
+    Relative parameter stress for one measured day (SQLite water_quality_records).
+    Raises ValueError if no row or no chemistry columns.
+    """
+    d = (date_str or "")[:10]
+    if len(d) != 10:
+        raise ValueError("invalid_date")
+    row = get_water_quality_measured_row(station_code, d)
+    if not row:
+        raise ValueError("no_measured_row")
+    raw = _raw_parameter_stress(row)
+    if not raw:
+        raise ValueError("no_parameters")
+    total = sum(raw.values()) or 1.0
+    labels = {
+        "DO": "Dissolved oxygen (DO)",
+        "BOD": "BOD",
+        "COD": "COD",
+        "AN_NH3": "Ammoniacal nitrogen (AN)",
+        "SS": "Suspended solids (SS)",
+        "pH": "pH",
+    }
+    row_key = {"DO": "DO", "BOD": "BOD", "COD": "COD", "AN_NH3": "AN", "SS": "SS", "pH": "pH"}
+    parameters = []
+    for key in sorted(raw.keys(), key=lambda k: -raw[k]):
+        parameters.append(
+            {
+                "parameter": key,
+                "label": labels.get(key, key),
+                "stress_score": round(raw[key], 2),
+                "contribution_pct": round(100.0 * raw[key] / total, 2),
+                "raw_value": _safe_float(row.get(row_key.get(key, key))),
+            }
+        )
+    return {
+        "station_code": normalize_station_code(station_code),
+        "date": d,
+        "wqi": _safe_float(row.get("WQI")),
+        "parameters": parameters,
+        "method_note": (
+            "Heuristic stress scores from deviation from typical Class I/II ideals; "
+            "use official DOE subindices where available."
+        ),
+    }
+
+
+def get_compare_wqi_series(
+    station_codes: list[str],
+    year: Optional[int] = None,
+    limit: int = 2000,
+) -> dict[str, Any]:
+    """Multi-station historical WQI for one chart (in-memory readings)."""
+    seen: set[str] = set()
+    order: list[str] = []
+    for c in station_codes:
+        nc = normalize_station_code(c)
+        if not nc or nc in seen:
+            continue
+        seen.add(nc)
+        order.append(nc)
+    stations_out: list[dict] = []
+    for code in order:
+        series = get_time_series(station_code=code, year=year, limit=limit)
+        stations_out.append(
+            {
+                "station_code": code,
+                "label": code,
+                "river_name": river_name_for_station(code, None),
+                "series": [
+                    {"date": x["date"], "wqi": x["wqi"], "river_status": x.get("river_status")}
+                    for x in series
+                ],
+            }
+        )
+    return {"stations": stations_out, "year": year}
+
+
+def get_wqi_calendar_heatmap(station_code: str, year: int) -> dict[str, Any]:
+    """One cell per calendar day in year (null WQI when no reading)."""
+    code = normalize_station_code(station_code)
+    y = int(year)
+    start = date(y, 1, 1)
+    end = date(y, 12, 31)
+    wqi_by_day: dict[str, float] = {}
+    for r in get_clean_historical_readings():
+        if normalize_station_code(r.get("station_code") or "") != code:
+            continue
+        ds = (r.get("reading_date") or "")[:10]
+        if len(ds) == 10 and ds.startswith(str(y)):
+            try:
+                wqi_by_day[ds] = float(r.get("wqi") or 0)
+            except (TypeError, ValueError):
+                continue
+    cells: list[dict] = []
+    d = start
+    while d <= end:
+        ds = d.isoformat()
+        w = wqi_by_day.get(ds)
+        st = status_from_wqi(float(w)) if w is not None else None
+        cells.append(
+            {
+                "date": ds,
+                "wqi": round(float(w), 2) if w is not None else None,
+                "status": st,
+            }
+        )
+        d += timedelta(days=1)
+    return {"station_code": code, "year": y, "cells": cells}
+
+
+def update_user_password_by_email(email: str, new_password_hash: str) -> bool:
+    """Update password for user with given email. Returns True if updated, False if email not found."""
+    email_lower = (email or "").strip().lower()
+    if not email_lower:
+        return False
+    with _sqlite_conn() as conn:
+        cur = conn.execute(
+            "UPDATE users SET password_hash = ? WHERE lower(email) = ?",
+            (new_password_hash, email_lower),
+        )
+        return cur.rowcount > 0
+
+
+def save_readings(dataset_id: int, readings: list[dict]) -> None:
+    """
+    Save WQI readings from the dataset. Replaces all existing readings so dashboard
+    reflects only the latest preprocessed data (station count and list match the dataset).
+    Each reading may include station_code, date/reading_date, wqi, and optional station_name.
+    river_name is stored for filtering and UI; derived from station_code via RIVER_MAPPING when omitted.
+    """
+    _store["readings"].clear()
+    for r in readings:
+        rd = r.get("date", r.get("reading_date", ""))
+        if not _reading_date_allows_stored_manual_wqi(str(rd)):
+            continue
+        scode = str(r.get("station_code", "S01")).strip()
+        sname = (r.get("station_name") or r.get("Station Name") or "").strip() or None
+        rec = {
+            "id": _next_id("readings"),
+            "dataset_id": dataset_id,
+            "station_code": scode,
+            "station_name": sname,
+            "reading_date": r.get("date", r.get("reading_date", "")),
+            "wqi": float(r.get("wqi", 0)),
+            "created_at": datetime.utcnow().isoformat(),
+        }
+        rec["river_name"] = (r.get("river_name") or "").strip() or river_name_for_station(scode, sname)
+        if r.get("river_status") is not None:
+            rec["river_status"] = str(r.get("river_status")).strip() or None
+        if r.get("source") is not None:
+            rec["source"] = str(r.get("source")).strip()
+        rec["data_type"] = str(r.get("data_type") or "historical").strip()
+        _store["readings"].append(rec)
+
+
+def append_readings_with_dedup(dataset_id: int, readings: list[dict]) -> None:
+    """
+    Append WQI readings to the in-memory store, de-duplicating by (station, date).
+
+    - Existing readings are kept unless a new row shares the same (station_code/station_name, date),
+      in which case the new row replaces the old one.
+    - Does NOT touch forecast data; dashboard still filters by reading_date <= today.
+    """
+    combined = list(_store["readings"])
+    # Build records for new readings using the same shape as save_readings / append_reading.
+    for r in readings:
+        rd = r.get("date", r.get("reading_date", ""))
+        if not _reading_date_allows_stored_manual_wqi(str(rd)):
+            continue
+        scode = str(r.get("station_code", "S01")).strip()
+        sname = (r.get("station_name") or r.get("Station Name") or "").strip() or None
+        rec = {
+            "id": _next_id("readings"),
+            "dataset_id": dataset_id,
+            "station_code": scode,
+            "station_name": sname,
+            "reading_date": r.get("date", r.get("reading_date", "")),
+            "wqi": float(r.get("wqi", 0)),
+            "created_at": datetime.utcnow().isoformat(),
+        }
+        rec["river_name"] = (r.get("river_name") or "").strip() or river_name_for_station(scode, sname)
+        if r.get("river_status") is not None:
+            rec["river_status"] = str(r.get("river_status")).strip() or None
+        if r.get("source") is not None:
+            rec["source"] = str(r.get("source")).strip()
+        rec["data_type"] = str(r.get("data_type") or "historical").strip()
+        combined.append(rec)
+
+    # De-duplicate by (station_code, reading_date) when code present — composite key per DB audit.
+    seen = set()
+    deduped_rev = []
+    for rec in reversed(combined):
+        d = rec.get("reading_date", "")
+        scode_k = str(rec.get("station_code") or "").strip()
+        dk = scode_k if scode_k else _canonical_station_key(rec)
+        k = (dk, d)
+        if k in seen:
+            continue
+        seen.add(k)
+        deduped_rev.append(rec)
+
+    _store["readings"] = list(reversed(deduped_rev))
+
+
+def append_reading(
+    dataset_id: int,
+    station_code: str,
+    station_name: Optional[str],
+    reading_date: str,
+    wqi: float,
+    river_status: str,
+    source: Optional[str] = None,
+    data_type: Optional[str] = None,
+) -> Optional[dict]:
+    """
+    Append a single reading without clearing existing data (e.g. simulated live data).
+    Returns the created record, or None if the date is outside the allowed manual-WQI window
+    (2026+ must use LSTM forecast in prediction_logs). Use source='simulated_live', data_type='simulated_live' for auto-generated daily data.
+    """
+    if not _reading_date_allows_stored_manual_wqi(str(reading_date or "")):
+        return None
+    sc = str(station_code).strip()
+    sn = (station_name or station_code).strip() or None
+    rec = {
+        "id": _next_id("readings"),
+        "dataset_id": dataset_id,
+        "station_code": sc,
+        "station_name": sn,
+        "reading_date": str(reading_date)[:10],
+        "wqi": float(wqi),
+        "river_status": str(river_status).strip() if river_status else None,
+        "created_at": datetime.utcnow().isoformat(),
+        "river_name": river_name_for_station(sc, sn),
+    }
+    if source:
+        rec["source"] = str(source).strip()
+    rec["data_type"] = (data_type or ("simulated_live" if source == "simulated_live" else "historical")).strip()
+    _store["readings"].append(rec)
+    return rec
+
+
+def get_latest_reading_for_station(station_name_or_code: str) -> Optional[dict]:
+    """
+    Get the latest reading (by date) for a station with reading_date <= today.
+    Used to continue simulated live from last value; never use future dates.
+    """
+    key = (station_name_or_code or "").strip()
+    if not key:
+        return None
+    candidates = [
+        r for r in get_clean_historical_readings()
+        if (r.get("station_name") or r.get("station_code") or "").strip() == key
+    ]
+    if not candidates:
+        return None
+    return max(candidates, key=lambda x: x.get("reading_date") or "")
+
+
+def save_prediction_log(
+    prediction_type: str,
+    result_json: dict,
+    dataset_id: Optional[int] = None,
+    station_code: Optional[str] = None,
+    reference_date: Optional[date] = None,
+    model_name: Optional[str] = None,
+) -> dict:
+    """Save classification, forecast, or anomaly result for dashboard and history."""
+    row = {
+        "id": _next_id("prediction_logs"),
+        "dataset_id": dataset_id,
+        "prediction_type": prediction_type,
+        "model_name": model_name,
+        "station_code": station_code,
+        "reference_date": reference_date.isoformat() if reference_date else None,
+        "result_json": result_json,
+        "created_at": datetime.utcnow().isoformat(),
+    }
+    _store["prediction_logs"].append(row)
+    return row
+
+
+def _normalize_alert_log_severity(severity: str, river_status: Optional[str]) -> str:
+    """SQLite + API: low | medium | critical (maps UI Low/Medium/Critical)."""
+    s = (severity or "").strip().lower()
+    if s in ("critical", "crit"):
+        return "critical"
+    if s in ("low", "info"):
+        return "low"
+    if s in ("medium", "warning", "warn"):
+        return "medium"
+    rs = (river_status or "").strip().lower().replace(" ", "_")
+    if rs == "polluted":
+        return "critical"
+    if rs == "slightly_polluted":
+        return "medium"
+    return "medium"
+
+
+def _persist_alert_event_to_sqlite(
+    *,
+    triggered_at: str,
+    station_code: Optional[str],
+    station_name: Optional[str],
+    severity_band: str,
+    parameter_triggered: str,
+    wqi_value: Optional[float],
+    message: str,
+    source: str,
+    in_memory_alert_id: Optional[int],
+) -> None:
+    try:
+        with _sqlite_conn() as conn:
+            conn.execute(
+                """
+                INSERT INTO alert_event_log (
+                  triggered_at, station_code, station_name, severity,
+                  parameter_triggered, wqi_value, status, message, source, in_memory_alert_id
+                ) VALUES (?, ?, ?, ?, ?, ?, 'active', ?, ?, ?)
+                """,
+                (
+                    triggered_at,
+                    (station_code or "").strip() or None,
+                    (station_name or "").strip() or None,
+                    severity_band,
+                    parameter_triggered[:256] if parameter_triggered else "WQI",
+                    wqi_value,
+                    message[:2000] if message else "",
+                    (source or "system")[:64],
+                    in_memory_alert_id,
+                ),
+            )
+            conn.commit()
+    except Exception:
+        logger.exception("persist alert_event_log failed")
+
+
+def save_alert(
+    station_code: str,
+    message: str,
+    severity: str = "warning",
+    prediction_log_id: Optional[int] = None,
+    wqi: Optional[float] = None,
+    date_str: Optional[str] = None,
+    alert_type: Optional[str] = None,
+    river_status: Optional[str] = None,
+    station_name: Optional[str] = None,
+    parameter_triggered: Optional[str] = None,
+    trigger_source: Optional[str] = None,
+) -> dict:
+    """Create an alert row. alert_type: 'historical' | 'forecast' | 'anomaly'. Mirrors row to SQLite alert_event_log."""
+    row = {
+        "id": _next_id("alerts"),
+        "prediction_log_id": prediction_log_id,
+        "station_code": station_code,
+        "message": message,
+        "severity": severity,
+        "is_read": False,
+        "created_at": datetime.utcnow().isoformat(),
+    }
+    if alert_type:
+        row["alert_type"] = str(alert_type).strip().lower()
+    if wqi is not None:
+        try:
+            row["wqi"] = float(wqi)
+        except (TypeError, ValueError):
+            pass
+    if date_str:
+        row["date"] = str(date_str)[:10]
+    if river_status:
+        row["river_status"] = str(river_status).strip()
+    if station_name:
+        row["station_name"] = str(station_name).strip()
+    _store["alerts"].append(row)
+
+    src = (trigger_source or alert_type or "system").strip().lower()
+    if not parameter_triggered:
+        if src == "anomaly":
+            parameter_triggered = "Isolation Forest"
+        elif src == "forecast":
+            parameter_triggered = "LSTM WQI forecast"
+        else:
+            parameter_triggered = "WQI"
+    band = _normalize_alert_log_severity(severity, river_status)
+    try:
+        wqv = float(row["wqi"]) if row.get("wqi") is not None else None
+    except (TypeError, ValueError):
+        wqv = None
+    _persist_alert_event_to_sqlite(
+        triggered_at=row["created_at"],
+        station_code=str(station_code or ""),
+        station_name=str(station_name or station_code or ""),
+        severity_band=band,
+        parameter_triggered=parameter_triggered,
+        wqi_value=wqv,
+        message=message,
+        source=src,
+        in_memory_alert_id=int(row["id"]),
+    )
+    return row
+
+
+def get_summary(river_name: Optional[str] = None) -> dict:
+    """
+    Dashboard summary: same **per-station** choice as the map (`get_stations`):
+    prefer the latest reading dated **today**; if none, use the latest historical row for that station.
+    Optional river_name narrows metrics to that river.
+    """
+    from collections import defaultdict
+    today = _today_str()
+    pred_avg = get_predicted_avg_wqi_2025_2028(river_name=river_name)
+    readings = list(get_clean_historical_readings())
+    if river_name and str(river_name).strip():
+        readings = [r for r in readings if reading_matches_river(r, str(river_name).strip())]
+    by_station = defaultdict(list)
+    for r in readings:
+        key = _canonical_station_key(r)
+        if key:
+            by_station[key].append(r)
+    latest_records = []
+    for _name, rows in by_station.items():
+        rows = sorted(rows, key=lambda x: (x.get("reading_date") or "", x.get("id", 0)))
+        if not rows:
+            continue
+        today_rows = [r for r in rows if (r.get("reading_date") or "")[:10] == today]
+        latest_records.append(today_rows[-1] if today_rows else rows[-1])
+    if not latest_records:
+        return {
+            "totalStations": 0,
+            "avgWqi": 0,
+            "cleanCount": 0,
+            "slightlyPollutedCount": 0,
+            "pollutedCount": 0,
+            "recentAnomaliesCount": len([a for a in _store["alerts"] if not a.get("is_read")]),
+            "predictedAvgWqi2025_2028": pred_avg,
+            "predictedAvgWqi2026": pred_avg,
+            "today": today,
+            "river_name": (river_name or "").strip() or None,
+        }
+    wqis = [r["wqi"] for r in latest_records]
+    clean = sum(1 for r in latest_records if _status_from_reading(r) == "clean")
+    slight = sum(1 for r in latest_records if _status_from_reading(r) == "slightly_polluted")
+    polluted = sum(1 for r in latest_records if _status_from_reading(r) == "polluted")
+    return {
+        "totalStations": len(latest_records),
+        "avgWqi": sum(wqis) / len(wqis) if wqis else 0,
+        "cleanCount": clean,
+        "slightlyPollutedCount": slight,
+        "pollutedCount": polluted,
+        "recentAnomaliesCount": len([a for a in _store["alerts"] if not a.get("is_read")]),
+        "predictedAvgWqi2025_2028": pred_avg,
+        "predictedAvgWqi2026": pred_avg,
+        "today": today,
+        "river_name": (river_name or "").strip() or None,
+    }
+
+
+def _status_from_reading(r: dict) -> str:
+    """River status from WQI only (dataset text may disagree with numeric WQI)."""
+    try:
+        w = float(r.get("wqi", 0) or 0)
+    except (TypeError, ValueError):
+        w = 0.0
+    return status_from_wqi(w)
+
+
+def get_predicted_avg_wqi_2025_2028(river_name: Optional[str] = None) -> float:
+    """
+    Average predicted WQI from the latest forecast run through the planning cap (to 2026-12-31).
+    Name kept for API compatibility; horizons are 2026-only in policy.
+    """
+    forecast = get_latest_forecast(limit=10000, river_name=river_name)
+    if not forecast:
+        return 0.0
+    wqis = [float(f.get("wqi", 0)) for f in forecast if f.get("wqi") is not None]
+    return sum(wqis) / len(wqis) if wqis else 0.0
+
+
+def get_time_series(
+    station_code: Optional[str] = None,
+    station_name: Optional[str] = None,
+    river_name: Optional[str] = None,
+    year: Optional[int] = None,
+    limit: int = 100,
+) -> list[dict]:
+    """WQI time series for charts: only readings with reading_date <= today (historical + simulated_live)."""
+    readings = list(get_clean_historical_readings())
+    if river_name and str(river_name).strip():
+        readings = [r for r in readings if reading_matches_river(r, str(river_name).strip())]
+    if station_code or station_name:
+        readings = [
+            r for r in readings
+            if (station_code and r.get("station_code") == station_code)
+            or (station_name and (r.get("station_name") == station_name or r.get("station_code") == station_name))
+        ]
+    if year is not None:
+        readings = [r for r in readings if r.get("reading_date", "")[:4] == str(year)]
+    readings = sorted(readings, key=lambda x: (x.get("reading_date", ""), x.get("station_code", "")))
+    # Dedupe by date for single-station view (keep last per date).
+    # River-only filter counts as single-station when the river maps to one monitoring station in-store.
+    single_station_focus = bool(station_code or station_name)
+    if not single_station_focus and river_name and str(river_name).strip():
+        kset = {_canonical_station_key(r) for r in readings if _canonical_station_key(r)}
+        single_station_focus = len(kset) <= 1
+    if single_station_focus:
+        seen = set()
+        out = []
+        for r in reversed(readings):
+            d = r.get("reading_date", "")
+            if d not in seen:
+                seen.add(d)
+                out.append(r)
+        readings = list(reversed(out))
+    readings = readings[-limit:]
+    out = []
+    for r in readings:
+        rec = {
+            "date": r["reading_date"],
+            "wqi": r["wqi"],
+            "station_code": r.get("station_code"),
+            "station_name": r.get("station_name") or r.get("station_code"),
+            "river_name": r.get("river_name") or river_name_for_station(r.get("station_code"), r.get("station_name")),
+        }
+        if r.get("river_status") is not None:
+            rec["river_status"] = r["river_status"]
+        out.append(rec)
+    return out
+
+
+def get_wqi_data(
+    station_code: Optional[str] = None,
+    station_name: Optional[str] = None,
+    river_name: Optional[str] = None,
+    year: Optional[int] = None,
+    limit: int = 500,
+) -> list[dict]:
+    """WQI records (reading_date <= today): Date, Station Name, WQI, River Status. Filter by station and/or year."""
+    readings = list(get_clean_historical_readings())
+    if river_name and str(river_name).strip():
+        readings = [r for r in readings if reading_matches_river(r, str(river_name).strip())]
+    if station_code or station_name:
+        readings = [
+            r for r in readings
+            if (station_code and r.get("station_code") == station_code)
+            or (station_name and (r.get("station_name") == station_name or r.get("station_code") == station_name))
+        ]
+    if year is not None:
+        readings = [r for r in readings if r.get("reading_date", "")[:4] == str(year)]
+    readings = sorted(readings, key=lambda x: x.get("reading_date", ""))[-limit:]
+    out = []
+    for r in readings:
+        status = status_from_wqi(float(r.get("wqi", 0) or 0))
+        out.append({
+            "date": r["reading_date"],
+            "station": r.get("station_name") or r.get("station_code"),
+            "station_code": r.get("station_code"),
+            "station_name": r.get("station_name") or r.get("station_code"),
+            "river_name": r.get("river_name") or river_name_for_station(r.get("station_code"), r.get("station_name")),
+            "wqi": r["wqi"],
+            "river_status": status,
+        })
+    return out
+
+
+def _apply_readings_filters(
+    readings: list,
+    station_name: Optional[str] = None,
+    river_name: Optional[str] = None,
+    year: Optional[int] = None,
+    status: Optional[str] = None,
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+):
+    """Apply filters to readings list (in place). Returns filtered list."""
+    if river_name and str(river_name).strip():
+        readings = [r for r in readings if reading_matches_river(r, str(river_name).strip())]
+    if station_name:
+        readings = [r for r in readings if (r.get("station_name") or r.get("station_code")) == station_name]
+    if year is not None:
+        readings = [r for r in readings if (r.get("reading_date") or "")[:4] == str(year)]
+    if status:
+        def _status(r):
+            return status_from_wqi(float(r.get("wqi", 0) or 0))
+        status_norm = status.strip().lower().replace(" ", "_")
+        readings = [r for r in readings if _status(r) == status_norm]
+    if date_from:
+        readings = [r for r in readings if (r.get("reading_date") or "") >= date_from[:10]]
+    if date_to:
+        readings = [r for r in readings if (r.get("reading_date") or "") <= date_to[:10]]
+    return readings
+
+
+def _forecast_rows_for_readings_api(
+    station_name: Optional[str] = None,
+    river_name: Optional[str] = None,
+    year: Optional[int] = None,
+    status: Optional[str] = None,
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+) -> list[dict]:
+    """
+    Forecast points for dataset table / count: tomorrow through FORECAST_PLANNING_END, then date/year/status filters.
+    Pagination is applied by callers — never pass page-sized limits into get_latest_forecast before date_from/date_to.
+    """
+    y_from: Optional[int] = None
+    y_to: Optional[int] = None
+    if year is not None:
+        try:
+            y_from = y_to = int(year)
+        except (TypeError, ValueError):
+            pass
+    rows = get_latest_forecast(
+        station_code=station_name,
+        river_name=river_name,
+        limit=FORECAST_READINGS_QUERY_CAP,
+        year_from=y_from,
+        year_to=y_to,
+    )
+    if date_from:
+        rows = [f for f in rows if (f.get("date") or "") >= date_from[:10]]
+    if date_to:
+        rows = [f for f in rows if (f.get("date") or "") <= date_to[:10]]
+    if status:
+        status_norm = status.strip().lower().replace(" ", "_")
+        rows = [
+            f
+            for f in rows
+            if status_from_wqi(float(f.get("wqi", 0) or 0)) == status_norm
+        ]
+    return rows
+
+
+def get_readings_count(
+    station_name: Optional[str] = None,
+    river_name: Optional[str] = None,
+    year: Optional[int] = None,
+    status: Optional[str] = None,
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    data_type: Optional[str] = None,
+) -> int:
+    """Total count matching filters. data_type: 'historical' (default) | 'forecast'. Historical = in-store readings to today; forecast = prediction_logs."""
+    if (data_type or "").strip().lower() == "forecast":
+        return len(
+            _forecast_rows_for_readings_api(
+                station_name=station_name,
+                river_name=river_name,
+                year=year,
+                status=status,
+                date_from=date_from,
+                date_to=date_to,
+            )
+        )
+    readings = list(get_clean_historical_readings())
+    readings = _apply_readings_filters(
+        readings,
+        station_name=station_name,
+        river_name=river_name,
+        year=year,
+        status=status,
+        date_from=date_from,
+        date_to=date_to,
+    )
+    return len(readings)
+
+
+def get_readings_table(
+    station_name: Optional[str] = None,
+    river_name: Optional[str] = None,
+    year: Optional[int] = None,
+    status: Optional[str] = None,
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    sort_by: str = "date",
+    sort_order: str = "asc",
+    limit: int = 100000,
+    offset: int = 0,
+    data_type: Optional[str] = None,
+) -> list[dict]:
+    """Dataset table: Station Name, Date, WQI, River Status, data_type. data_type: 'all' | 'historical' (date <= today) | 'forecast' (date > today from prediction_logs)."""
+    if (data_type or "").strip().lower() == "forecast":
+        forecast = _forecast_rows_for_readings_api(
+            station_name=station_name,
+            river_name=river_name,
+            year=year,
+            status=status,
+            date_from=date_from,
+            date_to=date_to,
+        )
+        key = "wqi" if sort_by == "wqi" else "date"
+        reverse = sort_order.lower() == "desc"
+        forecast = sorted(forecast, key=lambda x: (x.get(key) if key == "wqi" else x.get(key) or ""), reverse=reverse)
+        forecast = forecast[offset : offset + limit]
+        out = []
+        for r in forecast:
+            st = status_from_wqi(float(r.get("wqi", 0) or 0))
+            sc = r.get("station_code")
+            sn = r.get("station_name") or r.get("station_code")
+            out.append({
+                "station_code": sc,
+                "station_name": sn,
+                "river_name": r.get("river_name") or river_name_for_station(sc, sn),
+                "date": r.get("date"),
+                "wqi": r.get("wqi"),
+                "river_status": st,
+                "data_type": "forecast",
+            })
+        return out
+    readings = list(get_clean_historical_readings())
+    readings = _apply_readings_filters(
+        readings,
+        station_name=station_name,
+        river_name=river_name,
+        year=year,
+        status=status,
+        date_from=date_from,
+        date_to=date_to,
+    )
+    key = "wqi" if sort_by == "wqi" else "reading_date"
+    reverse = sort_order.lower() == "desc"
+    readings = sorted(readings, key=lambda x: (x.get(key) if key == "wqi" else x.get(key) or ""), reverse=reverse)
+    readings = readings[offset : offset + limit]
+    out = []
+    for r in readings:
+        st = status_from_wqi(float(r.get("wqi", 0) or 0))
+        out.append({
+            "station_code": r.get("station_code"),
+            "station_name": r.get("station_name") or r.get("station_code"),
+            "river_name": r.get("river_name") or river_name_for_station(r.get("station_code"), r.get("station_name")),
+            "date": r["reading_date"],
+            "wqi": r["wqi"],
+            "river_status": st,
+            "data_type": r.get("data_type") or "historical",
+        })
+    return out
+
+
+def get_available_years() -> list[int]:
+    """Return distinct years from historical readings only (date <= today), aligned with Overview."""
+    years = set()
+    for r in get_clean_historical_readings():
+        d = r.get("reading_date") or ""
+        if len(d) >= 4:
+            try:
+                years.add(int(d[:4]))
+            except ValueError:
+                pass
+    return sorted(years)
+
+
+def get_unique_river_names() -> list[str]:
+    """Distinct river_name from historical readings only (same slice as Overview / River Health)."""
+    seen: set[str] = set()
+    for r in get_clean_historical_readings():
+        rn = (r.get("river_name") or "").strip() or river_name_for_station(r.get("station_code"), r.get("station_name"))
+        if rn:
+            seen.add(rn)
+    return sorted(seen)
+
+
+def _latest_dashboard_forecast_log() -> Optional[dict]:
+    """
+    Newest prediction_log whose forecast list has ISO-dated points (RF time-series run from run_forecast).
+
+    POST /ml/predict/forecast used to append type 'forecast' with only {wqi} entries (no date). That log
+    was sorted as the latest and made get_latest_forecast return [] — so the UI showed no forecast.
+    """
+    logs = [l for l in _store["prediction_logs"] if l.get("prediction_type") == "forecast"]
+    if not logs:
+        return None
+
+    def _has_dated_points(log: dict) -> bool:
+        pts = (log.get("result_json") or {}).get("forecast") or []
+        return any(
+            isinstance(f, dict) and len((f.get("date") or "").strip()) >= 10
+            for f in pts
+        )
+
+    for log in sorted(logs, key=lambda x: x.get("created_at", ""), reverse=True):
+        if _has_dated_points(log):
+            return log
+    return None
+
+
+def get_latest_forecast(
+    station_code: Optional[str] = None,
+    river_name: Optional[str] = None,
+    limit: int = 10000,
+    year_from: Optional[int] = None,
+    year_to: Optional[int] = None,
+) -> list[dict]:
+    """Forecast from prediction_logs: only dates > today (starts from tomorrow). Optional filter by station and year range."""
+    today = _today_str()
+    latest = _latest_dashboard_forecast_log()
+    if not latest:
+        return []
+    forecast = latest.get("result_json", {}).get("forecast", [])
+    forecast = [f for f in forecast if (f.get("date") or "") > today]
+    forecast = [f for f in forecast if (f.get("date") or "")[:10] <= FORECAST_PLANNING_END]
+    if station_code:
+        scf = normalize_station_code(station_code)
+        sraw = (station_code or "").strip()
+        forecast = [
+            f
+            for f in forecast
+            if normalize_station_code(f.get("station_code") or "") == scf
+            or (f.get("station_name") or "").strip() == sraw
+        ]
+    if river_name and str(river_name).strip():
+        rn = str(river_name).strip()
+        forecast = [f for f in forecast if forecast_point_matches_river(f, rn)]
+    if year_from is not None:
+        forecast = [f for f in forecast if (f.get("date") or "")[:4] and int((f.get("date") or "0")[:4]) >= year_from]
+    if year_to is not None:
+        forecast = [f for f in forecast if (f.get("date") or "")[:4] and int((f.get("date") or "0")[:4]) <= year_to]
+    return [_attach_forecast_confidence_interval(dict(f)) for f in forecast[:limit]]
+
+
+def clear_historical_alerts() -> None:
+    """Remove all alerts with alert_type='historical'. Used when regenerating from dataset."""
+    _store["alerts"] = [
+        a for a in _store["alerts"]
+        if (a.get("alert_type") or "").lower() != "historical"
+    ]
+
+
+def clear_forecast_alerts() -> None:
+    """Remove forecast alerts so a new forecast run does not duplicate stale rows."""
+    _store["alerts"] = [
+        a for a in _store["alerts"]
+        if (a.get("alert_type") or "").lower() != "forecast"
+    ]
+
+
+def get_alerts(unread_only: bool = False, limit: int = 50) -> list[dict]:
+    """Return all alerts sorted by event date (latest first). Prefer alert date, fallback to created_at."""
+    alerts = _store["alerts"]
+    if unread_only:
+        alerts = [a for a in alerts if not a.get("is_read")]
+    def _key(a: dict) -> str:
+        return (a.get("date") or a.get("created_at") or "")
+    return sorted(alerts, key=_key, reverse=True)[:limit]
+
+
+def get_historical_alerts(limit: int = 100, river_name: Optional[str] = None) -> list[dict]:
+    """
+    Historical alerts (latest record per station):
+    - Use readings with reading_date <= today
+    - If latest status is slightly_polluted or polluted -> alert
+    - No severity concept; message is computed from status.
+    - Sorted by date: latest first.
+    """
+    # Latest reading per station (same historical slice as Overview).
+    from collections import defaultdict
+    by_station = defaultdict(list)
+    for r in get_clean_historical_readings():
+        if river_name and str(river_name).strip() and not reading_matches_river(r, str(river_name).strip()):
+            continue
+        key = _canonical_station_key(r)
+        if key:
+            by_station[key].append(r)
+
+    latest_records: list[dict] = []
+    for _, rows in by_station.items():
+        rows = sorted(rows, key=lambda x: (x.get("reading_date") or "", x.get("id", 0)))
+        if rows:
+            latest_records.append(rows[-1])
+
+    def _message(status: str) -> str:
+        if status == "slightly_polluted":
+            return "Monitor closely"
+        if status == "polluted":
+            return "Immediate attention required"
+        return ""
+
+    alerts: list[dict] = []
+    for rec in latest_records:
+        status = _status_from_reading(rec)
+        if status not in ("slightly_polluted", "polluted"):
+            continue
+        date_str = rec.get("reading_date")
+        rn = rec.get("river_name") or river_name_for_station(rec.get("station_code"), rec.get("station_name"))
+        alerts.append({
+            "station_code": rec.get("station_code"),
+            "station_name": rec.get("station_name") or rec.get("station_code"),
+            "river_name": rn,
+            "date": date_str,
+            "wqi": rec.get("wqi"),
+            "river_status": status,
+            "message": _message(status),
+            "alert_type": "historical",
+        })
+
+    alerts.sort(key=lambda a: (a.get("date") or "", a.get("station_name") or a.get("station_code") or ""), reverse=True)
+    return alerts[:limit]
+
+
+def get_forecast_alerts(limit: int = 100, river_name: Optional[str] = None) -> list[dict]:
+    """
+    Forecast alerts (future prediction points):
+    - Read from latest forecast prediction_logs
+    - Use only dates strictly after today through today+7 days (7-day operational horizon)
+    - Keep slightly_polluted or polluted
+    - Sorted by earliest forecast date first
+    """
+    today = _today_str()
+    try:
+        end_7d = (date.fromisoformat(today) + timedelta(days=7)).isoformat()
+    except ValueError:
+        end_7d = today
+    latest = _latest_dashboard_forecast_log()
+    if not latest:
+        return []
+    forecast_points = latest.get("result_json", {}).get("forecast", [])
+
+    def _message(status: str) -> str:
+        if status == "slightly_polluted":
+            return "Monitor closely"
+        if status == "polluted":
+            return "Immediate attention required"
+        return ""
+
+    alerts: list[dict] = []
+    for p in forecast_points:
+        date_str = p.get("date") or ""
+        if not date_str or date_str <= today:
+            continue
+        if date_str[:10] > end_7d[:10]:
+            continue
+        if date_str[:10] > FORECAST_PLANNING_END:
+            continue
+        try:
+            wq = float(p.get("wqi", 0) or 0)
+        except (TypeError, ValueError):
+            wq = 0.0
+        status = status_from_wqi(wq)
+        if status not in ("slightly_polluted", "polluted"):
+            continue
+        if river_name and str(river_name).strip() and not forecast_point_matches_river(p, str(river_name).strip()):
+            continue
+        sc, sn = p.get("station_code"), p.get("station_name") or p.get("station_code")
+        alerts.append({
+            "station_code": sc,
+            "station_name": sn,
+            "river_name": p.get("river_name") or river_name_for_station(sc, sn),
+            "date": date_str,
+            "wqi": wq,
+            "river_status": status,
+            "message": _message(status),
+            "alert_type": "forecast",
+        })
+
+    alerts.sort(key=lambda a: a.get("date") or "")
+    return alerts[:limit]
+
+
+def list_alert_event_log(
+    limit: int = 200,
+    status: Optional[str] = None,
+    source: Optional[str] = None,
+) -> list[dict]:
+    """Persistent log of triggered alerts (SQLite). status: active|resolved; source: anomaly|forecast|historical|..."""
+    lim = max(1, min(int(limit), 2000))
+    q = "SELECT id, triggered_at, station_code, station_name, severity, parameter_triggered, wqi_value, status, message, source FROM alert_event_log WHERE 1=1"
+    args: list = []
+    if status and str(status).strip().lower() in ("active", "resolved"):
+        q += " AND lower(status) = ?"
+        args.append(str(status).strip().lower())
+    if source and str(source).strip():
+        q += " AND lower(source) = ?"
+        args.append(str(source).strip().lower())
+    q += " ORDER BY triggered_at DESC LIMIT ?"
+    args.append(lim)
+    out: list[dict] = []
+    try:
+        with _sqlite_conn() as conn:
+            for r in conn.execute(q, tuple(args)).fetchall():
+                out.append(
+                    {
+                        "alert_id": int(r["id"]),
+                        "timestamp": r["triggered_at"],
+                        "station_name": r["station_name"] or r["station_code"] or "—",
+                        "severity": r["severity"],
+                        "parameter_triggered": r["parameter_triggered"] or "—",
+                        "wqi_value": r["wqi_value"],
+                        "status": r["status"],
+                        "message": r["message"],
+                        "source": r["source"],
+                    }
+                )
+    except Exception:
+        logger.exception("list_alert_event_log failed")
+    return out
+
+
+def set_alert_event_log_status(alert_log_id: int, status: str) -> bool:
+    """Mark alert log row resolved or active (admin)."""
+    st = (status or "").strip().lower()
+    if st not in ("active", "resolved"):
+        return False
+    try:
+        aid = int(alert_log_id)
+    except (TypeError, ValueError):
+        return False
+    try:
+        with _sqlite_conn() as conn:
+            cur = conn.execute(
+                "UPDATE alert_event_log SET status = ? WHERE id = ?",
+                (st, aid),
+            )
+            conn.commit()
+            return cur.rowcount > 0
+    except Exception:
+        logger.exception("set_alert_event_log_status failed")
+        return False
+
+
+def create_admin_warning(message: str, created_by_user_id: int) -> dict:
+    """Insert active admin warning (public banner)."""
+    msg = (message or "").strip()
+    if not msg:
+        raise ValueError("Message required")
+    ts = datetime.utcnow().isoformat()
+    with _sqlite_conn() as conn:
+        cur = conn.execute(
+            """
+            INSERT INTO admin_warnings (message, created_by_user_id, created_at, is_active)
+            VALUES (?, ?, ?, 1)
+            """,
+            (msg[:2000], int(created_by_user_id), ts),
+        )
+        wid = int(cur.lastrowid)
+        conn.commit()
+    return {"id": wid, "message": msg, "created_at": ts, "is_active": True}
+
+
+def list_active_admin_warnings() -> list[dict]:
+    with _sqlite_conn() as conn:
+        rows = conn.execute(
+            """
+            SELECT id, message, created_at, created_by_user_id
+            FROM admin_warnings WHERE is_active = 1 ORDER BY id DESC
+            """
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def list_all_admin_warnings_admin(limit: int = 100) -> list[dict]:
+    lim = max(1, min(int(limit), 500))
+    with _sqlite_conn() as conn:
+        rows = conn.execute(
+            """
+            SELECT id, message, created_at, created_by_user_id, is_active
+            FROM admin_warnings ORDER BY id DESC LIMIT ?
+            """,
+            (lim,),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def deactivate_admin_warning(warning_id: int) -> bool:
+    try:
+        wid = int(warning_id)
+    except (TypeError, ValueError):
+        return False
+    with _sqlite_conn() as conn:
+        cur = conn.execute(
+            "UPDATE admin_warnings SET is_active = 0 WHERE id = ?",
+            (wid,),
+        )
+        conn.commit()
+        return cur.rowcount > 0
+
+
+def get_latest_dataset() -> Optional[dict]:
+    """Return the most recently added dataset (by id)."""
+    if not _store["datasets"]:
+        return None
+    return max(_store["datasets"], key=lambda d: d["id"])
+
+
+def get_latest_anomalies(
+    station_code: Optional[str] = None,
+    river_name: Optional[str] = None,
+    limit: int = 500,
+) -> list[dict]:
+    """
+    Return latest anomaly run as list of { date, station_code, station_name, wqi, reason }.
+    Filter by station if station_code (or station_name) provided.
+    """
+    logs = [l for l in _store["prediction_logs"] if l.get("prediction_type") == "anomaly"]
+    if not logs:
+        return []
+    latest = max(logs, key=lambda x: x.get("created_at", ""))
+    anomalies = latest.get("result_json", {}).get("anomalies", [])
+    if station_code:
+        anomalies = [a for a in anomalies if (a.get("station_code") or a.get("station_name")) == station_code]
+    if river_name and str(river_name).strip():
+        rn = str(river_name).strip()
+        anomalies = [a for a in anomalies if reading_matches_river(a, rn)]
+    out = []
+    for a in anomalies[:limit]:
+        sc = a.get("station_code", "—")
+        sn = a.get("station_name") or a.get("station_code", "—")
+        out.append({
+            "date": a.get("date", ""),
+            "station_code": sc,
+            "station_name": sn,
+            "river_name": a.get("river_name") or river_name_for_station(sc, sn),
+            "wqi": a.get("wqi"),
+            "reason": a.get("reason", "Abnormal spike"),
+        })
+    return out
+
+
+def get_stations() -> list[dict]:
+    """
+    Stations: WQI/status for map — prefer **today's** reading per station when present; otherwise latest historical.
+    """
+    from collections import defaultdict
+    today = _today_str()
+    by_station = defaultdict(list)
+    for r in get_clean_historical_readings():
+        key = _canonical_station_key(r)
+        if key:
+            by_station[key].append(r)
+    out = []
+    for _key, rows in by_station.items():
+        rows = sorted(rows, key=lambda x: (x.get("reading_date") or "", x.get("id", 0)))
+        today_rows = [r for r in rows if (r.get("reading_date") or "")[:10] == today]
+        latest = today_rows[-1] if today_rows else (rows[-1] if rows else {})
+        code = (latest.get("station_code") or "").strip() or _key
+        name = (latest.get("station_name") or "").strip() or code
+        rn = latest.get("river_name") or river_name_for_station(code, name)
+        wqi = latest.get("wqi", 0)
+        try:
+            wqf = float(wqi or 0)
+        except (TypeError, ValueError):
+            wqf = 0.0
+        status = status_from_wqi(wqf)
+        out.append({
+            "station_code": code,
+            "station_name": name,
+            "river_name": rn,
+            "latest_wqi": wqi,
+            "river_status": status,
+            "last_reading_date": latest.get("reading_date"),
+        })
+    # Merge admin-managed coordinates only (by station_code/name)
+    admin_codes = {s.get("station_code") or s.get("station_name"): s for s in _store["stations"]}
+    for rec in out:
+        key = rec.get("station_code") or rec.get("station_name")
+        if key and key in admin_codes:
+            adm = admin_codes[key]
+            if adm.get("latitude") is not None:
+                rec["latitude"] = adm["latitude"]
+            if adm.get("longitude") is not None:
+                rec["longitude"] = adm["longitude"]
+
+    cov = _station_coverage_from_readings()
+    for rec in out:
+        lookup = _canonical_station_key(
+            {"station_code": rec.get("station_code"), "station_name": rec.get("station_name")}
+        )
+        info = cov.get(lookup) if lookup else None
+        if info:
+            rec.update(info)
+        else:
+            rec["data_coverage_pct"] = 0.0
+            rec["data_coverage_days"] = 0
+            rec["data_coverage_span_days"] = 0
+            rec["data_coverage_date_from"] = None
+            rec["data_coverage_date_to"] = None
+            rec["data_coverage_range_label"] = "No dated readings"
+
+    existing_codes = {normalize_station_code(s.get("station_code") or "") for s in out if s.get("station_code")}
+    for ph in coming_soon_station_templates():
+        c = normalize_station_code(ph.get("station_code") or "")
+        if not c or c in existing_codes:
+            continue
+        existing_codes.add(c)
+        prec = {
+            "station_code": c,
+            "station_name": ph.get("station_name") or c,
+            "river_name": ph.get("river_name") or river_name_for_station(c, None),
+            "latest_wqi": None,
+            "river_status": None,
+            "last_reading_date": None,
+            "data_coming_soon": True,
+            "state": ph.get("state"),
+            "data_coverage_pct": 0.0,
+            "data_coverage_days": 0,
+            "data_coverage_span_days": 0,
+            "data_coverage_date_from": None,
+            "data_coverage_date_to": None,
+            "data_coverage_range_label": "Data coming soon",
+        }
+        akey = prec.get("station_code")
+        if akey and akey in admin_codes:
+            adm = admin_codes[akey]
+            if adm.get("latitude") is not None:
+                prec["latitude"] = adm["latitude"]
+            if adm.get("longitude") is not None:
+                prec["longitude"] = adm["longitude"]
+        out.append(prec)
+    return out
+
+
+def create_station(
+    station_code: str,
+    station_name: Optional[str] = None,
+    latitude: Optional[float] = None,
+    longitude: Optional[float] = None,
+    river_name: Optional[str] = None,
+    state: Optional[str] = None,
+) -> dict:
+    """Create a station (admin)."""
+    code = (station_code or "").strip()
+    if not code:
+        raise ValueError("station_code required")
+    for s in _store["stations"]:
+        if (s.get("station_code") or "").strip() == code:
+            raise ValueError("Station code already exists")
+    sid = _next_id("stations")
+    row = {
+        "id": sid,
+        "station_code": code,
+        "station_name": (station_name or "").strip() or None,
+        "latitude": latitude,
+        "longitude": longitude,
+        "river_name": (river_name or "").strip() or None,
+        "state": (state or "").strip() or None,
+        "created_at": datetime.utcnow().isoformat(),
+    }
+    _store["stations"].append(row)
+    return dict(row)
+
+
+def update_station(
+    station_id: int,
+    station_code: Optional[str] = None,
+    station_name: Optional[str] = None,
+    latitude: Optional[float] = None,
+    longitude: Optional[float] = None,
+    river_name: Optional[str] = None,
+    state: Optional[str] = None,
+) -> Optional[dict]:
+    """Update a station (admin)."""
+    for s in _store["stations"]:
+        if s["id"] == station_id:
+            if station_code is not None:
+                s["station_code"] = str(station_code).strip()
+            if station_name is not None:
+                s["station_name"] = str(station_name).strip() or None
+            if latitude is not None:
+                s["latitude"] = latitude
+            if longitude is not None:
+                s["longitude"] = longitude
+            if river_name is not None:
+                s["river_name"] = str(river_name).strip() or None
+            if state is not None:
+                s["state"] = str(state).strip() or None
+            return dict(s)
+    return None
+
+
+def delete_station(station_id: int) -> bool:
+    """Delete a station (admin)."""
+    for i, s in enumerate(_store["stations"]):
+        if s["id"] == station_id:
+            _store["stations"].pop(i)
+            return True
+    return False
+
+
+def list_stations_admin() -> list[dict]:
+    """List all stations for admin (full list from _store['stations'] + derived from readings)."""
+    return get_stations()
+
+
+def create_feedback_report(
+    email: str,
+    message: str,
+    user_id: Optional[int] = None,
+    name: Optional[str] = None,
+) -> dict:
+    """Persist user feedback / issue report (SQLite)."""
+    email_norm = (email or "").strip().lower()
+    if not email_norm:
+        raise ValueError("Email required")
+    msg = (message or "").strip()
+    if not msg:
+        raise ValueError("Message required")
+    name_clean = (name or "").strip() or None
+    created_at = datetime.utcnow().isoformat()
+    uid = None
+    if user_id is not None:
+        try:
+            uid = int(user_id)
+        except (TypeError, ValueError):
+            uid = None
+    with _sqlite_conn() as conn:
+        cur = conn.execute(
+            """
+            INSERT INTO feedback_reports (user_id, name, email, message, created_at)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (uid, name_clean, email_norm, msg, created_at),
+        )
+        rid = int(cur.lastrowid)
+    return {
+        "id": rid,
+        "user_id": uid,
+        "name": name_clean,
+        "email": email_norm,
+        "message": msg,
+        "created_at": created_at,
+        "is_read": False,
+        "read_at": None,
+    }
+
+
+def list_feedback_reports(
+    limit: int = 500,
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    name: Optional[str] = None,
+    email: Optional[str] = None,
+    is_read: Optional[bool] = None,
+) -> list[dict]:
+    """All feedback rows (admin), with optional filters."""
+    lim = max(1, min(int(limit), 2000))
+    where: list[str] = []
+    params: list = []
+    if date_from:
+        where.append("substr(created_at, 1, 10) >= ?")
+        params.append(str(date_from).strip()[:10])
+    if date_to:
+        where.append("substr(created_at, 1, 10) <= ?")
+        params.append(str(date_to).strip()[:10])
+    if name:
+        where.append("lower(coalesce(name, '')) LIKE ?")
+        params.append(f"%{str(name).strip().lower()}%")
+    if email:
+        where.append("lower(email) LIKE ?")
+        params.append(f"%{str(email).strip().lower()}%")
+    if is_read is not None:
+        where.append("is_read = ?")
+        params.append(1 if bool(is_read) else 0)
+    where_sql = ("WHERE " + " AND ".join(where)) if where else ""
+    with _sqlite_conn() as conn:
+        rows = conn.execute(
+            f"""
+            SELECT id, user_id, name, email, message, created_at, is_read, read_at
+            FROM feedback_reports
+            {where_sql}
+            ORDER BY datetime(created_at) DESC
+            LIMIT ?
+            """,
+            tuple(params + [lim]),
+        ).fetchall()
+    out = []
+    for r in rows:
+        out.append({
+            "id": r["id"],
+            "user_id": r["user_id"],
+            "name": r["name"],
+            "email": r["email"],
+            "message": r["message"],
+            "created_at": r["created_at"],
+            "is_read": bool(r["is_read"] or 0),
+            "read_at": r["read_at"],
+        })
+    return out
+
+
+def mark_feedback_report_read(report_id: int, is_read: bool = True) -> Optional[dict]:
+    """Set read/unread status for one feedback report and return the updated row."""
+    rid = int(report_id)
+    read_flag = 1 if is_read else 0
+    read_at = datetime.utcnow().isoformat() if is_read else None
+    with _sqlite_conn() as conn:
+        exists = conn.execute(
+            "SELECT id FROM feedback_reports WHERE id = ?",
+            (rid,),
+        ).fetchone()
+        if not exists:
+            return None
+        conn.execute(
+            """
+            UPDATE feedback_reports
+            SET is_read = ?, read_at = ?
+            WHERE id = ?
+            """,
+            (read_flag, read_at, rid),
+        )
+        row = conn.execute(
+            """
+            SELECT id, user_id, name, email, message, created_at, is_read, read_at
+            FROM feedback_reports
+            WHERE id = ?
+            """,
+            (rid,),
+        ).fetchone()
+    if not row:
+        return None
+    return {
+        "id": row["id"],
+        "user_id": row["user_id"],
+        "name": row["name"],
+        "email": row["email"],
+        "message": row["message"],
+        "created_at": row["created_at"],
+        "is_read": bool(row["is_read"] or 0),
+        "read_at": row["read_at"],
+    }
+
+
+def delete_feedback_report(report_id: int) -> bool:
+    """Delete one feedback report by id."""
+    rid = int(report_id)
+    with _sqlite_conn() as conn:
+        cur = conn.execute("DELETE FROM feedback_reports WHERE id = ?", (rid,))
+    return cur.rowcount > 0
+
+
+def seed_default_admin() -> Optional[dict]:
+    """
+    Create default admin user if not present.
+    email: admin@smartriver.com, password: admin123
+    Call from app startup (e.g. main.py lifespan).
+    """
+    from backend.auth.auth_service import hash_password
+    existing = get_user_by_email("admin@smartriver.com")
+    if existing:
+        return None
+    return create_user(
+        email="admin@smartriver.com",
+        password_hash=hash_password("admin123"),
+        full_name="SmartRiver Admin",
+        role="admin",
+        username="admin",
+        email_verified=True,
+    )
