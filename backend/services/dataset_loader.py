@@ -57,6 +57,12 @@ STATION_COORDINATES = {
     "Sungai Perak": (4.5921, 101.0901),
     # Sungai Pinang → Penang
     "Sungai Pinang": (5.4141, 100.3288),
+    # Sungai Sarawak → Sarawak (Kuching corridor)
+    "Sungai Sarawak": (1.5533, 110.3592),
+    # Sungai Kinabatangan → Sabah (Kinabatangan basin)
+    "Sungai Kinabatangan": (5.5000, 118.0000),
+    "S06": (1.5533, 110.3592),
+    "S07": (5.5000, 118.0000),
 }
 
 # Fallback: Sungai Kulim area (Kedah, Malaysia). Spread other stations around this center for map.

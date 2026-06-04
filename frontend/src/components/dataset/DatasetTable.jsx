@@ -25,15 +25,11 @@ const DATA_TYPE_OPTIONS = [
 /** Policy-aligned forecast window (matches backend cap). */
 const FORECAST_CAP_YEAR = 2026
 
-/** Next calendar month after local today within 2026; '' if none left in year (use whole-year view). */
-function defaultForecastMonthAfterToday() {
-  const t = new Date()
-  const y = t.getFullYear()
-  const m = t.getMonth()
-  if (y > FORECAST_CAP_YEAR) return ''
-  if (y < FORECAST_CAP_YEAR) return '1'
-  if (m >= 11) return ''
-  return String(m + 2)
+function formatOverviewDate(isoDate) {
+  if (!isoDate) return '—'
+  const d = new Date(`${String(isoDate).slice(0, 10)}T12:00:00`)
+  if (Number.isNaN(d.getTime())) return isoDate
+  return d.toLocaleDateString('en-MY', { year: 'numeric', month: 'long', day: 'numeric' })
 }
 
 /**
@@ -69,6 +65,7 @@ export default function DatasetTable({
   const [sortValue, setSortValue] = useState('date_asc')
   const [pageSize, setPageSize] = useState(10)
   const [page, setPage] = useState(1)
+  const [overview, setOverview] = useState(null)
 
   const sortOption = SORT_OPTIONS.find((o) => o.value === sortValue) || SORT_OPTIONS[2]
   const prevDataType = useRef(dataType)
@@ -76,7 +73,7 @@ export default function DatasetTable({
   useEffect(() => {
     if (prevDataType.current !== 'forecast' && dataType === 'forecast') {
       setMonthYear(String(FORECAST_CAP_YEAR))
-      setMonthFilter(defaultForecastMonthAfterToday())
+      setMonthFilter('')
       setPage(1)
     }
     if (prevDataType.current === 'forecast' && dataType === 'historical') {
@@ -89,6 +86,14 @@ export default function DatasetTable({
 
   useEffect(() => {
     if (datasetRevision > 0) setPage(1)
+  }, [datasetRevision])
+
+  useEffect(() => {
+    let cancelled = false
+    dashboardApi.getDatasetOverview().then((res) => {
+      if (!cancelled) setOverview(res || null)
+    }).catch(() => { if (!cancelled) setOverview(null) })
+    return () => { cancelled = true }
   }, [datasetRevision])
 
   useEffect(() => {
@@ -219,18 +224,22 @@ export default function DatasetTable({
   const endRow = Math.min(page * pageSize, total)
 
   const totalRecords = total
-  const totalStationsCurrentPage = new Set((data || []).map((r) => r.station_name || r.station || '')).size
+  const totalStationsOverview =
+    overview?.total_stations ?? dashboardApi.dedupeStationsByCode(stations.filter((s) => !s.data_coming_soon)).length
   const avgWqiCurrentPage =
     data && data.length > 0
       ? data.reduce((sum, r) => sum + (r.wqi != null ? Number(r.wqi) : 0), 0) / data.length
       : 0
-  const latestDateCurrentPage =
-    data && data.length > 0
-      ? data
-          .map((r) => r.date || '')
-          .filter(Boolean)
-          .sort()
-          .slice(-1)[0]
+  const latestDateDisplay = formatOverviewDate(
+    overview?.latest_date || new Date().toISOString().slice(0, 10),
+  )
+  const historicalRangeLabel =
+    overview?.historical_date_from && overview?.historical_date_to
+      ? `${formatOverviewDate(overview.historical_date_from)} — ${formatOverviewDate(overview.historical_date_to)}`
+      : null
+  const forecastRangeLabel =
+    overview?.forecast_date_from && overview?.forecast_date_to
+      ? `${formatOverviewDate(overview.forecast_date_from)} — ${formatOverviewDate(overview.forecast_date_to)}`
       : null
 
   const rowStatusClass = (riverStatus) => {
@@ -253,17 +262,30 @@ export default function DatasetTable({
           <p>{totalRecords}</p>
         </div>
         <div className="rounded-lg bg-surface-50 px-3 py-2 border border-surface-200">
-          <p className="font-medium text-surface-800">Stations (current page)</p>
-          <p>{totalStationsCurrentPage}</p>
+          <p className="font-medium text-surface-800">Stations with data</p>
+          <p>{totalStationsOverview}</p>
         </div>
         <div className="rounded-lg bg-surface-50 px-3 py-2 border border-surface-200">
           <p className="font-medium text-surface-800">Average WQI (current page)</p>
           <p>{data.length > 0 ? avgWqiCurrentPage.toFixed(1) : '—'}</p>
         </div>
         <div className="rounded-lg bg-surface-50 px-3 py-2 border border-surface-200">
-          <p className="font-medium text-surface-800">Latest date (current page)</p>
-          <p>{latestDateCurrentPage || '—'}</p>
+          <p className="font-medium text-surface-800">Latest date</p>
+          <p>{latestDateDisplay}</p>
         </div>
+        {dataType !== 'forecast' && historicalRangeLabel ? (
+          <div className="rounded-lg bg-surface-50 px-3 py-2 border border-surface-200">
+            <p className="font-medium text-surface-800">Historical range</p>
+            <p>{historicalRangeLabel}</p>
+            <p className="text-xs text-surface-500 mt-0.5">Includes LSTM predictions for dates that have passed</p>
+          </div>
+        ) : null}
+        {dataType === 'forecast' && forecastRangeLabel ? (
+          <div className="rounded-lg bg-cyan-50 px-3 py-2 border border-cyan-200">
+            <p className="font-medium text-cyan-900">Forecast date range</p>
+            <p className="text-cyan-950">{forecastRangeLabel}</p>
+          </div>
+        ) : null}
       </div>
 
       {/* Filters — river is the primary user-facing scope; optional fine station filter */}
@@ -292,8 +314,8 @@ export default function DatasetTable({
           >
             <option value="">All</option>
             {stations.map((s) => (
-              <option key={s.station_code} value={s.station_name || s.station_code}>
-                {s.station_name || s.station_code}
+              <option key={s.station_code} value={s.station_code}>
+                {s.station_name} ({s.station_code})
               </option>
             ))}
           </select>
@@ -423,7 +445,7 @@ export default function DatasetTable({
                 >
                   <td className="px-4 py-2 font-medium text-surface-800">{r.river_name || '—'}</td>
                   <td className="px-4 py-2 text-surface-800 font-mono text-xs sm:text-sm">{r.date || '—'}</td>
-                  <td className="px-4 py-2 text-surface-800">{r.station_name || r.station_code || '—'}</td>
+                  <td className="px-4 py-2 text-surface-800 font-mono text-xs sm:text-sm">{r.station_code || '—'}</td>
                   <td className="px-4 py-2">{r.wqi != null ? Number(r.wqi).toFixed(1) : '—'}</td>
                   <td className="px-4 py-2">
                     <RiverHealthIndicator wqi={r.wqi} compact />

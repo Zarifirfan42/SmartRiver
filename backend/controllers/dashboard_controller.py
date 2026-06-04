@@ -17,6 +17,8 @@ from backend.db.repository import (
     get_compare_wqi_series,
     get_wqi_calendar_heatmap,
     get_parameter_contribution_breakdown,
+    get_dataset_overview,
+    verify_wqi_predictions_2026,
 )
 
 router = APIRouter()
@@ -28,6 +30,18 @@ def dashboard_summary(
 ):
     """Summary KPIs; optional river_name scopes counts to that water body for clearer reporting."""
     return get_summary(river_name=river_name)
+
+
+@router.get("/overview")
+def dashboard_overview():
+    """Dataset overview: live latest date, record/station totals, forecast date range."""
+    return get_dataset_overview()
+
+
+@router.get("/verify-wqi-2026")
+def dashboard_verify_wqi_2026():
+    """Admin/dev: check 2026 LSTM WQI values in SQLite are on 0–100 scale."""
+    return verify_wqi_predictions_2026()
 
 
 @router.get("/rivers")

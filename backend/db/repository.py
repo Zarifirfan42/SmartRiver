@@ -16,8 +16,10 @@ logger = logging.getLogger(__name__)
 from backend.services.river_mapping import (
     coming_soon_station_templates,
     forecast_point_matches_river,
+    is_canonical_station_record,
     normalize_station_code,
     reading_matches_river,
+    resolve_canonical_station_code,
     river_name_for_station,
 )
 
@@ -80,10 +82,8 @@ def status_from_wqi(wqi: float) -> str:
 
 
 def _canonical_station_key(r: dict) -> str:
-    """One group per station: prefer station_code, else station_name."""
-    code = (r.get("station_code") or "").strip()
-    name = (r.get("station_name") or "").strip()
-    return code or name or ""
+    """One group per station: always S01–S07 when the row is a known river."""
+    return resolve_canonical_station_code(r.get("station_code"), r.get("station_name"))
 
 # In-memory store (mirrors DB tables). Replace with SQL when DATABASE_URL is set.
 _store = {
@@ -97,11 +97,42 @@ _store = {
 }
 
 
-def get_clean_historical_readings() -> list[dict]:
+def _raw_forecast_points_from_log() -> list[dict]:
+    """All dated LSTM points from the latest dashboard forecast log (full 2026 horizon)."""
+    latest = _latest_dashboard_forecast_log()
+    if not latest:
+        return []
+    pts = latest.get("result_json", {}).get("forecast", [])
+    return [f for f in pts if isinstance(f, dict) and len((f.get("date") or "").strip()) >= 10]
+
+
+def _forecast_point_to_reading(f: dict) -> dict:
+    """Convert a prediction_log forecast point into an in-memory reading-shaped row."""
+    code = resolve_canonical_station_code(f.get("station_code"), f.get("station_name"))
+    rn = river_name_for_station(code, f.get("station_name"))
+    try:
+        wqi = float(f.get("wqi", 0) or 0)
+    except (TypeError, ValueError):
+        wqi = 0.0
+    d = (f.get("date") or "")[:10]
+    st = f.get("river_status") or status_from_wqi(wqi)
+    return {
+        "reading_date": d,
+        "station_code": code,
+        "station_name": rn,
+        "wqi": wqi,
+        "river_status": st,
+        "river_name": rn,
+        "data_type": "predicted_historical",
+        "source": "lstm_forecast",
+        "is_predicted": True,
+    }
+
+
+def _get_in_store_historical_readings() -> list[dict]:
     """
-    Single source for in-store monitoring data used by Overview, River Health, summaries, and the
-    default dataset table: reading_date <= today, excluding rows tagged data_type=='forecast'.
-    ML forecast points stay in prediction_logs only, not here.
+    CSV / backfill / simulated rows only (no ML log merge).
+    reading_date <= today; excludes data_type=='forecast'.
     """
     today = _today_str()
     out: list[dict] = []
@@ -112,6 +143,119 @@ def get_clean_historical_readings() -> list[dict]:
             continue
         out.append(r)
     return out
+
+
+def get_clean_historical_readings() -> list[dict]:
+    """
+    Historical slice for dashboard: in-store readings with date <= today, plus LSTM points from
+    prediction_logs where date <= today (2026-01-01 .. today). Real/file rows win on duplicate dates.
+    """
+    today = _today_str()
+    by_key: dict[tuple[str, str], dict] = {}
+    for r in _get_in_store_historical_readings():
+        d = (r.get("reading_date") or "")[:10]
+        if not d:
+            continue
+        k = (_canonical_station_key(r), d)
+        by_key[k] = r
+
+    for f in _raw_forecast_points_from_log():
+        d = (f.get("date") or "")[:10]
+        if not d or d > today:
+            continue
+        merged = _forecast_point_to_reading(f)
+        k = (_canonical_station_key(merged), d)
+        if k in by_key:
+            continue
+        by_key[k] = merged
+
+    return sorted(by_key.values(), key=lambda x: (x.get("reading_date", ""), x.get("station_code", "")))
+
+
+def get_historical_records_sqlite(
+    station_code: Optional[str] = None,
+    limit: int = 50_000,
+) -> list[dict]:
+    """
+    SQLite water_quality_records where date <= today (real DOE rows + passed LSTM predictions).
+    """
+    today = _today_str()
+    sc = normalize_station_code(station_code) if station_code else ""
+    lim = max(1, min(int(limit), 200_000))
+    sql = """
+        SELECT date, station_code, station_name, WQI, pollution_status, is_predicted, data_source
+        FROM water_quality_records
+        WHERE date <= ?
+    """
+    params: list[Any] = [today]
+    if sc:
+        sql += " AND station_code = ?"
+        params.append(sc)
+    sql += " ORDER BY date ASC LIMIT ?"
+    params.append(lim)
+    with _sqlite_conn() as conn:
+        rows = conn.execute(sql, params).fetchall()
+    return [dict(r) for r in rows]
+
+
+def get_forecast_records_sqlite(
+    station_code: Optional[str] = None,
+    limit: int = 50_000,
+) -> list[dict]:
+    """SQLite rows with date > today and date <= FORECAST_PLANNING_END."""
+    today = _today_str()
+    sc = normalize_station_code(station_code) if station_code else ""
+    lim = max(1, min(int(limit), 200_000))
+    sql = """
+        SELECT date, station_code, station_name, WQI, pollution_status, is_predicted, data_source
+        FROM water_quality_records
+        WHERE date > ? AND date <= ?
+    """
+    params: list[Any] = [today, FORECAST_PLANNING_END]
+    if sc:
+        sql += " AND station_code = ?"
+        params.append(sc)
+    sql += " ORDER BY date ASC LIMIT ?"
+    params.append(lim)
+    with _sqlite_conn() as conn:
+        rows = conn.execute(sql, params).fetchall()
+    return [dict(r) for r in rows]
+
+
+def verify_wqi_predictions_2026() -> dict:
+    """Sanity-check 2026 predicted WQI in SQLite (flags values < 1.0 as likely unscaled)."""
+    with _sqlite_conn() as conn:
+        suspicious = conn.execute(
+            """
+            SELECT COUNT(*) AS n FROM water_quality_records
+            WHERE date >= '2026-01-01' AND WQI IS NOT NULL AND WQI < 1.0
+            """
+        ).fetchone()
+        summary = conn.execute(
+            """
+            SELECT station_code,
+                   MIN(WQI) AS min_wqi,
+                   MAX(WQI) AS max_wqi,
+                   AVG(WQI) AS avg_wqi,
+                   COUNT(*) AS total
+            FROM water_quality_records
+            WHERE date >= '2026-01-01'
+            GROUP BY station_code
+            ORDER BY station_code
+            """
+        ).fetchall()
+    sus_n = int(suspicious["n"]) if suspicious else 0
+    rows = [dict(r) for r in summary]
+    return {
+        "suspicious_low_wqi_count": sus_n,
+        "ok": sus_n == 0,
+        "message": (
+            "WQI values look correct for 2026 predictions"
+            if sus_n == 0
+            else f"WARNING: {sus_n} records have WQI < 1.0 — check scaler inverse_transform"
+        ),
+        "by_station": rows,
+    }
 
 _SQLITE_PATH = os.environ.get("SMARTRIVER_SQLITE_PATH") or str(
     Path(__file__).resolve().parent / "smartriver.sqlite3"
@@ -1357,6 +1501,31 @@ def save_alert(
     return row
 
 
+def get_forecast_date_range() -> tuple[str, str]:
+    """ML forecast horizon: tomorrow through end of 2026 (product policy cap)."""
+    start = date.today() + timedelta(days=1)
+    end = date(2026, 12, 31)
+    return start.isoformat(), end.isoformat()
+
+
+def get_dataset_overview() -> dict:
+    """Dataset overview stats for dashboard summary cards (live calendar date)."""
+    readings = get_clean_historical_readings()
+    station_keys = {_canonical_station_key(r) for r in readings if _canonical_station_key(r)}
+    forecast_from, forecast_to = get_forecast_date_range()
+    today_iso = date.today().isoformat()
+    return {
+        "latest_date": today_iso,
+        "total_records": len(readings),
+        "total_stations": len(station_keys),
+        "forecast_date_from": forecast_from,
+        "forecast_date_to": forecast_to,
+        "historical_date_from": "2023-01-01",
+        "historical_date_to": today_iso,
+        "today": today_iso,
+    }
+
+
 def get_summary(river_name: Optional[str] = None) -> dict:
     """
     Dashboard summary: same **per-station** choice as the map (`get_stations`):
@@ -1382,6 +1551,7 @@ def get_summary(river_name: Optional[str] = None) -> dict:
         today_rows = [r for r in rows if (r.get("reading_date") or "")[:10] == today]
         latest_records.append(today_rows[-1] if today_rows else rows[-1])
     if not latest_records:
+        overview = get_dataset_overview()
         return {
             "totalStations": 0,
             "avgWqi": 0,
@@ -1393,11 +1563,16 @@ def get_summary(river_name: Optional[str] = None) -> dict:
             "predictedAvgWqi2026": pred_avg,
             "today": today,
             "river_name": (river_name or "").strip() or None,
+            "latest_date": overview["latest_date"],
+            "total_records": overview["total_records"],
+            "forecast_date_from": overview["forecast_date_from"],
+            "forecast_date_to": overview["forecast_date_to"],
         }
     wqis = [r["wqi"] for r in latest_records]
     clean = sum(1 for r in latest_records if _status_from_reading(r) == "clean")
     slight = sum(1 for r in latest_records if _status_from_reading(r) == "slightly_polluted")
     polluted = sum(1 for r in latest_records if _status_from_reading(r) == "polluted")
+    overview = get_dataset_overview()
     return {
         "totalStations": len(latest_records),
         "avgWqi": sum(wqis) / len(wqis) if wqis else 0,
@@ -1409,6 +1584,10 @@ def get_summary(river_name: Optional[str] = None) -> dict:
         "predictedAvgWqi2026": pred_avg,
         "today": today,
         "river_name": (river_name or "").strip() or None,
+        "latest_date": overview["latest_date"],
+        "total_records": overview["total_records"],
+        "forecast_date_from": overview["forecast_date_from"],
+        "forecast_date_to": overview["forecast_date_to"],
     }
 
 
@@ -1440,7 +1619,7 @@ def get_time_series(
     year: Optional[int] = None,
     limit: int = 100,
 ) -> list[dict]:
-    """WQI time series for charts: only readings with reading_date <= today (historical + simulated_live)."""
+    """WQI time series for charts: date <= today (DOE 2023–2025 + passed LSTM 2026 predictions)."""
     readings = list(get_clean_historical_readings())
     if river_name and str(river_name).strip():
         readings = [r for r in readings if reading_matches_river(r, str(river_name).strip())]
@@ -2086,9 +2265,11 @@ def get_stations() -> list[dict]:
         rows = sorted(rows, key=lambda x: (x.get("reading_date") or "", x.get("id", 0)))
         today_rows = [r for r in rows if (r.get("reading_date") or "")[:10] == today]
         latest = today_rows[-1] if today_rows else (rows[-1] if rows else {})
-        code = (latest.get("station_code") or "").strip() or _key
-        name = (latest.get("station_name") or "").strip() or code
-        rn = latest.get("river_name") or river_name_for_station(code, name)
+        code = resolve_canonical_station_code(
+            latest.get("station_code") or _key,
+            latest.get("station_name"),
+        )
+        rn = river_name_for_station(code, latest.get("station_name"))
         wqi = latest.get("wqi", 0)
         try:
             wqf = float(wqi or 0)
@@ -2097,7 +2278,7 @@ def get_stations() -> list[dict]:
         status = status_from_wqi(wqf)
         out.append({
             "station_code": code,
-            "station_name": name,
+            "station_name": rn,
             "river_name": rn,
             "latest_wqi": wqi,
             "river_status": status,
@@ -2160,7 +2341,29 @@ def get_stations() -> list[dict]:
             if adm.get("longitude") is not None:
                 prec["longitude"] = adm["longitude"]
         out.append(prec)
-    return out
+
+    deduped: dict[str, dict] = {}
+    for rec in out:
+        if not is_canonical_station_record(
+            rec.get("station_code"),
+            rec.get("station_name"),
+            rec.get("river_name"),
+        ):
+            continue
+        ck = resolve_canonical_station_code(rec.get("station_code"), rec.get("station_name"))
+        if not ck:
+            continue
+        rn = river_name_for_station(ck, rec.get("station_name"))
+        normalized = {
+            **rec,
+            "station_code": ck,
+            "station_name": rn,
+            "river_name": rn,
+        }
+        prev = deduped.get(ck)
+        if not prev or (normalized.get("last_reading_date") or "") >= (prev.get("last_reading_date") or ""):
+            deduped[ck] = normalized
+    return sorted(deduped.values(), key=lambda x: x.get("station_code", ""))
 
 
 def create_station(

@@ -53,10 +53,12 @@ export default function RiverHealthPage() {
     return () => { cancelled = true }
   }, [dataRevision])
 
+  const activeStations = stations.filter((s) => !s.data_coming_soon && s.latest_wqi != null)
+
   const filteredStations =
     filter === 'all'
-      ? stations
-      : stations.filter((s) => s.river_status === filter)
+      ? activeStations
+      : activeStations.filter((s) => s.river_status === filter)
 
   return (
     <div className="space-y-6 animate-fade-in">
@@ -66,6 +68,11 @@ export default function RiverHealthPage() {
           <p className="text-surface-600 mt-0.5">
             River monitoring stations and readings from the River Monitoring Dataset. Use the chart below for historical
             WQI with ML forecast (2026 horizon); the table supports forecast rows via Data type.
+            {activeStations.length > 0 ? (
+              <span className="ml-1 font-medium text-surface-800">
+                ({activeStations.length} station{activeStations.length === 1 ? '' : 's'} with data)
+              </span>
+            ) : null}
           </p>
         </div>
         <div className="flex gap-2 flex-wrap">
@@ -110,7 +117,7 @@ export default function RiverHealthPage() {
       </div>
 
       <WqiHistoricalForecastCard
-        stations={stations}
+        stations={activeStations.length > 0 ? activeStations : stations.filter((s) => !s.data_coming_soon)}
         dataRevision={dataRevision}
         pickRiver
       />

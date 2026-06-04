@@ -1,6 +1,5 @@
 import { useState, useEffect, useMemo } from 'react'
 import * as dashboardApi from '../api/dashboard'
-import { useAuth } from '../context/AuthContext'
 import { SMARTRIVER_DATASET_CHANGED } from '../constants/datasetEvents'
 import {
   countPollutedStations,
@@ -14,20 +13,6 @@ function formatStatus(s) {
   if (v === 'slightly polluted') return 'Slightly Polluted'
   if (v === 'polluted') return 'Polluted'
   return v
-}
-
-function severityDisplay(sev) {
-  const x = String(sev || '').toLowerCase()
-  if (x === 'critical') return 'Critical'
-  if (x === 'low') return 'Low'
-  return 'Medium'
-}
-
-function severityBadgeClass(sev) {
-  const x = String(sev || '').toLowerCase()
-  if (x === 'critical') return 'bg-red-100 text-red-900 border-red-200'
-  if (x === 'low') return 'bg-emerald-100 text-emerald-900 border-emerald-200'
-  return 'bg-amber-100 text-amber-900 border-amber-200'
 }
 
 /** Parse alert date to YYYY-MM-DD prefix when possible */
@@ -58,7 +43,6 @@ function localTodayYmd() {
 }
 
 export default function AlertMonitoringPage() {
-  const { isAdmin } = useAuth()
   const [stations, setStations] = useState([])
   const [historicalAlerts, setHistoricalAlerts] = useState([])
   const [forecastAlerts, setForecastAlerts] = useState([])
@@ -76,11 +60,6 @@ export default function AlertMonitoringPage() {
   const [forecastMonthFilter, setForecastMonthFilter] = useState('') // '' or '1'..'12'
   /** Forecast alerts only: slightly polluted vs polluted */
   const [forecastStatusFilter, setForecastStatusFilter] = useState('')
-
-  const [alertLog, setAlertLog] = useState([])
-  const [logLoading, setLogLoading] = useState(true)
-  const [logError, setLogError] = useState(null)
-  const [logStatusFilter, setLogStatusFilter] = useState('')
 
   /** Re-render periodically so "today" rolls over at local midnight without a full refresh */
   const [clockTick, setClockTick] = useState(0)
@@ -143,30 +122,6 @@ export default function AlertMonitoringPage() {
     fetchAlerts()
     return () => { cancelled = true }
   }, [riverFilter, dataRevision])
-
-  useEffect(() => {
-    let cancelled = false
-    async function loadLog() {
-      setLogLoading(true)
-      setLogError(null)
-      try {
-        const rows = await dashboardApi.getAlertHistory({
-          limit: 500,
-          status: logStatusFilter || undefined,
-        })
-        if (!cancelled) setAlertLog(Array.isArray(rows) ? rows : [])
-      } catch (err) {
-        if (!cancelled) {
-          setLogError(err.message || 'Failed to load alert log')
-          setAlertLog([])
-        }
-      } finally {
-        if (!cancelled) setLogLoading(false)
-      }
-    }
-    loadLog()
-    return () => { cancelled = true }
-  }, [logStatusFilter, dataRevision])
 
   useEffect(() => {
     let cancelled = false
@@ -303,7 +258,7 @@ export default function AlertMonitoringPage() {
           <span className="font-medium text-surface-800">Forecast</span> lists the next{' '}
           <span className="font-medium text-surface-800">seven days</span> where the LSTM predicts{' '}
           <span className="font-medium text-surface-800">slightly polluted or polluted</span> WQI (aligned with automated forecast alerts).{' '}
-          Use station / year / month filters on the forecast table. The <strong>historical alert log</strong> below keeps a database record of each trigger (anomaly, forecast, or historical threshold).
+          Use station / year / month filters on the forecast table.
         </p>
         <div className="text-sm text-surface-500 mt-2">
           <div>Data source: monitoring (today) · forecast alert table (next 7 days of predicted poor WQI) · full LSTM series on Pollution Forecast page</div>
@@ -323,109 +278,6 @@ export default function AlertMonitoringPage() {
         </div>
       )}
       {loading && <p className="text-surface-500">Loading alerts…</p>}
-
-      {/* Persistent triggered-alert log (SQLite) */}
-      <div className="rounded-xl border border-surface-200 bg-white p-4 shadow-sm">
-        <div className="flex flex-wrap items-end justify-between gap-4 mb-3">
-          <div>
-            <h2 className="font-display font-semibold text-surface-800">Historical alert log</h2>
-            <p className="text-sm text-surface-500 mt-0.5">
-              All triggered alerts (Isolation Forest, LSTM 7-day forecast, and historical WQI thresholds), with severity and resolution status.
-            </p>
-          </div>
-          <div>
-            <label className="label">Log status</label>
-            <select
-              value={logStatusFilter}
-              onChange={(e) => setLogStatusFilter(e.target.value)}
-              className="input-field w-auto min-w-[160px]"
-            >
-              <option value="">All</option>
-              <option value="active">Active</option>
-              <option value="resolved">Resolved</option>
-            </select>
-          </div>
-        </div>
-        {logError && (
-          <p className="text-sm text-amber-700 mb-2">{logError}</p>
-        )}
-        {logLoading ? <p className="text-surface-500 text-sm">Loading log…</p> : null}
-        <div className="overflow-x-auto rounded-lg border border-surface-200 mt-2">
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="bg-surface-100 text-left">
-                <th className="px-3 py-2 font-medium text-surface-700">Alert ID</th>
-                <th className="px-3 py-2 font-medium text-surface-700">Timestamp</th>
-                <th className="px-3 py-2 font-medium text-surface-700">Station</th>
-                <th className="px-3 py-2 font-medium text-surface-700">Severity</th>
-                <th className="px-3 py-2 font-medium text-surface-700">Parameter</th>
-                <th className="px-3 py-2 font-medium text-surface-700">WQI</th>
-                <th className="px-3 py-2 font-medium text-surface-700">Source</th>
-                <th className="px-3 py-2 font-medium text-surface-700">Status</th>
-                <th className="px-3 py-2 font-medium text-surface-700">Message</th>
-                {isAdmin ? <th className="px-3 py-2 font-medium text-surface-700">Action</th> : null}
-              </tr>
-            </thead>
-            <tbody>
-              {!logLoading && alertLog.length === 0 ? (
-                <tr>
-                  <td colSpan={isAdmin ? 10 : 9} className="px-4 py-6 text-center text-surface-500">
-                    No log entries yet. Run dataset load, anomaly detection, or LSTM forecast from the backend lifecycle.
-                  </td>
-                </tr>
-              ) : (
-                alertLog.map((row) => (
-                  <tr key={row.alert_id} className="border-t border-surface-100">
-                    <td className="px-3 py-2 font-mono text-xs">{row.alert_id}</td>
-                    <td className="px-3 py-2 text-xs whitespace-nowrap">{row.timestamp ? new Date(row.timestamp).toLocaleString() : '—'}</td>
-                    <td className="px-3 py-2">{row.station_name || '—'}</td>
-                    <td className="px-3 py-2">
-                      <span className={`inline-flex rounded-full border px-2 py-0.5 text-xs font-medium ${severityBadgeClass(row.severity)}`}>
-                        {severityDisplay(row.severity)}
-                      </span>
-                    </td>
-                    <td className="px-3 py-2 max-w-[140px]">{row.parameter_triggered || '—'}</td>
-                    <td className="px-3 py-2 tabular-nums">{row.wqi_value != null ? Number(row.wqi_value).toFixed(1) : '—'}</td>
-                    <td className="px-3 py-2 text-xs capitalize">{row.source || '—'}</td>
-                    <td className="px-3 py-2">
-                      <span className={row.status === 'resolved' ? 'text-surface-500' : 'text-amber-800 font-medium'}>
-                        {row.status === 'resolved' ? 'Resolved' : 'Active'}
-                      </span>
-                    </td>
-                    <td className="px-3 py-2 text-surface-700 max-w-xs text-xs">{row.message || '—'}</td>
-                    {isAdmin ? (
-                      <td className="px-3 py-2">
-                        {row.status === 'active' ? (
-                          <button
-                            type="button"
-                            className="text-xs font-medium text-river-600 hover:text-river-800"
-                            onClick={async () => {
-                              try {
-                                await dashboardApi.resolveAlertHistory(row.alert_id)
-                                const rows = await dashboardApi.getAlertHistory({
-                                  limit: 500,
-                                  status: logStatusFilter || undefined,
-                                })
-                                setAlertLog(Array.isArray(rows) ? rows : [])
-                              } catch {
-                                setLogError('Could not resolve entry')
-                              }
-                            }}
-                          >
-                            Mark resolved
-                          </button>
-                        ) : (
-                          <span className="text-surface-400 text-xs">—</span>
-                        )}
-                      </td>
-                    ) : null}
-                  </tr>
-                ))
-              )}
-            </tbody>
-          </table>
-        </div>
-      </div>
 
       {/* Filters */}
       <div className="rounded-xl border border-surface-200 bg-white p-4 shadow-sm">

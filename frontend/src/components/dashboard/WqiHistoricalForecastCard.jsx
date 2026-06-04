@@ -90,12 +90,6 @@ export default function WqiHistoricalForecastCard({
   const [forecastSeries, setForecastSeries] = useState([])
   const [seriesToday, setSeriesToday] = useState(null)
 
-  const [refreshTick, setRefreshTick] = useState(0)
-  useEffect(() => {
-    const id = setInterval(() => setRefreshTick((t) => t + 1), 90_000)
-    return () => clearInterval(id)
-  }, [])
-
   useEffect(() => {
     if (trendStationChoices.length === 0) {
       setTrendStation('')
@@ -143,7 +137,7 @@ export default function WqiHistoricalForecastCard({
     return () => {
       cancelled = true
     }
-  }, [effectiveRiver, trendYear, trendStation, dataRevision, refreshTick])
+  }, [effectiveRiver, trendYear, trendStation, dataRevision])
 
   const histForChart = useMemo(
     () => timeSeries.map((d) => ({ date: d.date, wqi: d.wqi ?? d.value })),
@@ -232,13 +226,6 @@ export default function WqiHistoricalForecastCard({
             ))}
           </select>
         </div>
-        <button
-          type="button"
-          className="btn-secondary text-sm"
-          onClick={() => setRefreshTick((t) => t + 1)}
-        >
-          Refresh
-        </button>
       </div>
 
       <p className="text-xs text-surface-500 mb-3">

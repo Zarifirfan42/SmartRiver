@@ -228,34 +228,32 @@ export default function ForecastChart({ historical = [], forecast = [], height =
     fcAgg = fcWithDates.slice(-365)
   }
 
-  // Single chronological timeline: merge historical + forecast and dedupe by date
-  const dateToHist = new Map()
-  histAgg.forEach(({ date, wqi }) => dateToHist.set(date.getTime(), { type: 'hist', wqi }))
-  const dateToFc = new Map()
-  fcAgg.forEach(({ date, wqi, lo, hi }) => dateToFc.set(date.getTime(), { type: 'fc', wqi, lo, hi }))
-  const allTimestamps = [...new Set([...dateToHist.keys(), ...dateToFc.keys()])].sort((a, b) => a - b)
-  const allDates = allTimestamps.map((t) => new Date(t))
-  let allLabels
-  if (viewMode === 'daily') {
-    allLabels = allDates.map((d) => `${d.getDate().toString().padStart(2, '0')} ${MONTHS[d.getMonth()]} ${d.getFullYear()}`)
-  } else if (viewMode === 'monthly') {
-    allLabels = allDates.map((d) => formatMonthYear(d))
-  } else {
-    allLabels = allDates.map((d) => `${d.getFullYear()}`)
+  // Build independent {x,y} series so Chart.js x-axis autoscales to visible datasets (legend toggle).
+  const histPoints = histAgg
+    .filter(({ wqi }) => wqi != null && !Number.isNaN(Number(wqi)))
+    .map(({ date, wqi }) => ({ x: date.getTime(), y: Number(wqi) }))
+  const fcPoints = fcAgg
+    .filter(({ wqi }) => wqi != null && !Number.isNaN(Number(wqi)))
+    .map(({ date, wqi, lo, hi }) => ({ x: date.getTime(), y: Number(wqi), lo, hi }))
+
+  const formatXTick = (ms) => {
+    const d = new Date(ms)
+    if (Number.isNaN(d.getTime())) return ''
+    if (viewMode === 'daily') {
+      return `${d.getDate().toString().padStart(2, '0')} ${MONTHS[d.getMonth()]} ${d.getFullYear()}`
+    }
+    if (viewMode === 'monthly') return formatMonthYear(d)
+    return `${d.getFullYear()}`
   }
 
-  const histData = allTimestamps.map((t) => (dateToHist.has(t) ? dateToHist.get(t).wqi : null))
-  const fcData = allTimestamps.map((t) => (dateToFc.has(t) ? dateToFc.get(t).wqi : null))
-  const fcLowerData = allTimestamps.map((t) => (dateToFc.has(t) ? dateToFc.get(t).lo : null))
-  const fcUpperData = allTimestamps.map((t) => (dateToFc.has(t) ? dateToFc.get(t).hi : null))
-  const hasCi = fcLowerData.some((v) => v != null) && fcUpperData.some((v) => v != null)
+  const hasCi = fcPoints.some((p) => p.lo != null && p.hi != null)
 
   const tension = viewMode === 'daily' ? 0.15 : 0.25
   const ciDatasets = hasCi
     ? [
         {
           label: 'Forecast CI lower',
-          data: fcLowerData,
+          data: fcPoints.map((p) => ({ x: p.x, y: p.lo })),
           borderColor: 'rgba(79, 70, 229, 0)',
           backgroundColor: 'transparent',
           borderWidth: 0,
@@ -264,10 +262,11 @@ export default function ForecastChart({ historical = [], forecast = [], height =
           tension,
           spanGaps: false,
           order: 0,
+          parsing: false,
         },
         {
           label: 'Forecast CI upper',
-          data: fcUpperData,
+          data: fcPoints.map((p) => ({ x: p.x, y: p.hi })),
           borderColor: 'rgba(79, 70, 229, 0)',
           backgroundColor: 'rgba(79, 70, 229, 0.18)',
           borderWidth: 0,
@@ -276,38 +275,40 @@ export default function ForecastChart({ historical = [], forecast = [], height =
           tension,
           spanGaps: false,
           order: 0,
+          parsing: false,
         },
       ]
     : []
 
   const chartData = {
-    labels: allLabels,
     datasets: [
       ...ciDatasets,
       {
-        label: 'Historical Data',
-        data: histData,
-        borderColor: '#94a3b8',
-        backgroundColor: 'rgba(148, 163, 184, 0.16)',
-        borderWidth: viewMode === 'daily' ? 1.1 : 1.3,
+        label: 'Historical WQI (2023 – today)',
+        data: histPoints,
+        borderColor: '#0077b6',
+        backgroundColor: 'rgba(0, 119, 182, 0.1)',
+        borderWidth: 2,
         fill: viewMode === 'daily',
         tension,
         pointRadius: viewMode === 'daily' ? 1 : 0,
         spanGaps: false,
         order: 2,
+        parsing: false,
       },
       {
-        label: 'Forecast Prediction',
-        data: fcData,
-        borderColor: '#4f46e5',
-        borderDash: [],
-        backgroundColor: 'rgba(79, 70, 229, 0.12)',
-        borderWidth: viewMode === 'daily' ? 3.2 : 2.4,
+        label: 'ML Forecast (tomorrow – Dec 2026)',
+        data: fcPoints.map((p) => ({ x: p.x, y: p.y })),
+        borderColor: '#f77f00',
+        borderDash: [5, 5],
+        backgroundColor: 'rgba(247, 127, 0, 0.1)',
+        borderWidth: 2,
         fill: false,
         tension,
         pointRadius: viewMode === 'daily' ? 2 : 2,
         spanGaps: false,
         order: 3,
+        parsing: false,
       },
     ],
   }
@@ -327,7 +328,8 @@ export default function ForecastChart({ historical = [], forecast = [], height =
         callbacks: {
           title(items) {
             if (!items || items.length === 0) return ''
-            return items[0].label
+            const raw = items[0].parsed?.x ?? items[0].raw?.x
+            return formatXTick(Number(raw))
           },
           label(context) {
             const value = context.parsed.y
@@ -345,11 +347,18 @@ export default function ForecastChart({ historical = [], forecast = [], height =
     scales: {
       ...baseOptions.scales,
       x: {
-        ...baseOptions.scales.x,
+        type: 'linear',
         title: {
           display: true,
           text: viewMode === 'daily' ? 'Date' : viewMode === 'monthly' ? 'Month' : 'Year',
           font: { size: 12 },
+        },
+        grid: { display: false },
+        ticks: {
+          maxTicksLimit: 20,
+          autoSkip: true,
+          autoSkipPadding: 8,
+          callback: (value) => formatXTick(Number(value)),
         },
       },
     },

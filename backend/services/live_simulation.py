@@ -6,13 +6,15 @@ with small random steps and optional seasonal variation (separate from ML foreca
 import random
 from datetime import date
 
-# All stations that receive simulated live data (must match names in dataset/readings).
+# Fallback labels when /dashboard/stations is empty (seven canonical rivers).
 SIMULATED_LIVE_STATIONS = [
-    "Sungai Kulim",
     "Sungai Klang",
     "Sungai Gombak",
-    "Sungai Perak",
     "Sungai Pinang",
+    "Sungai Kulim",
+    "Sungai Perak",
+    "Sungai Sarawak",
+    "Sungai Kinabatangan",
 ]
 
 # WQI step range: new_wqi = previous_wqi + random(-3, +3) for realistic continuity.
@@ -138,34 +140,46 @@ def run_simulated_live_data() -> int:
     return len(created)
 
 
+def _run_daily_forecast_maintenance() -> None:
+    """
+    Refresh LSTM 2026 horizon so passed dates appear as historical (date <= today) and
+    future dates stay in forecast (date > today). Runs after startup load and on the daily tick.
+    """
+    try:
+        from backend.services.forecast_service import run_forecast
+
+        pts = run_forecast()
+        n = len(pts) if isinstance(pts, list) else 0
+        print(f"[SCHEDULER] LSTM forecast refresh: {n} points (2026-01-01 .. 2026-12-31).")
+    except Exception as e:
+        print(f"[SCHEDULER] LSTM forecast refresh failed: {e}")
+
+
 def start_daily_scheduler() -> None:
     """
-    Start a background thread that runs simulated live data once now and then every 24 hours
-    so that data updates daily even if the server does not restart.
+    Background thread: simulated live data + daily LSTM forecast refresh.
+    Yesterday's forecast rows become historical automatically when the calendar advances
+    (historical queries use date <= today; forecast uses date > today).
     """
     import threading
     import time
 
-    def _run_at_interval():
-        # Run once shortly after startup (dataset already loaded).
-        time.sleep(2)
+    def _daily_tick():
         try:
             n = run_simulated_live_data()
             if n > 0:
                 print(f"Live simulation: generated {n} readings for {date.today().isoformat()}.")
         except Exception as e:
             print("Live simulation run failed:", e)
+        _run_daily_forecast_maintenance()
 
-        # Then run every 24 hours (at same time next day).
+    def _run_at_interval():
+        time.sleep(2)
+        _daily_tick()
         while True:
             time.sleep(86400)
-            try:
-                n = run_simulated_live_data()
-                if n > 0:
-                    print(f"Live simulation: generated {n} readings for {date.today().isoformat()}.")
-            except Exception as e:
-                print("Live simulation run failed:", e)
+            _daily_tick()
 
     t = threading.Thread(target=_run_at_interval, daemon=True)
     t.start()
-    print("Live simulation scheduler started (runs daily).")
+    print("Live simulation + forecast scheduler started (runs daily).")

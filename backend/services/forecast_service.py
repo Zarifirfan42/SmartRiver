@@ -159,15 +159,11 @@ def run_forecast() -> list[dict]:
 
     forecast: list[dict] = []
     today = _today_str()
-    # Policy: only dates from tomorrow through 2026-12-31 (no past "forecast" days, no 2027+).
-    try:
-        tomorrow_d = date.fromisoformat(today) + timedelta(days=1)
-    except ValueError:
-        tomorrow_d = date.today() + timedelta(days=1)
-    start_d = tomorrow_d
+    # Generate full 2026 horizon; API layers split date <= today (historical) vs > today (forecast).
+    start_d = date(2026, 1, 1)
     end_d = FORECAST_END_DATE
     if start_d > end_d:
-        print(f"Forecast: empty window (tomorrow={start_d} > policy end={end_d}).")
+        print(f"Forecast: empty window (start={start_d} > policy end={end_d}).")
         return []
 
     for station in station_labels:
@@ -205,12 +201,13 @@ def run_forecast() -> list[dict]:
 
             date_str = current.isoformat()
             st = status_from_wqi(wqi_next)
+            rn = river_name_for_station(scode, station)
             forecast.append(
                 {
                     "date": date_str,
-                    "station_code": station,
-                    "station_name": station,
-                    "river_name": river_name_for_station(station, station),
+                    "station_code": scode,
+                    "station_name": rn,
+                    "river_name": rn,
                     "wqi": wqi_next,
                     "river_status": st,
                 }
@@ -226,7 +223,14 @@ def run_forecast() -> list[dict]:
 
     log = save_prediction_log(
         "forecast",
-        {"forecast": forecast, "model": "lstm", "forecast_years": FORECAST_YEARS},
+        {
+            "forecast": forecast,
+            "model": "lstm",
+            "forecast_years": FORECAST_YEARS,
+            "generated_from": start_d.isoformat(),
+            "generated_through": end_d.isoformat(),
+            "policy_today": today,
+        },
         model_name="lstm",
     )
 

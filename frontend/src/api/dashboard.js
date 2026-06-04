@@ -9,6 +9,11 @@ export async function getSummary(params = {}) {
   return data
 }
 
+export async function getDatasetOverview() {
+  const { data } = await api.get('/dashboard/overview')
+  return data
+}
+
 export async function getRivers() {
   const { data } = await api.get('/dashboard/rivers')
   return data.rivers || []
@@ -26,7 +31,7 @@ export async function getForecast(params = {}) {
 
 export async function getStations() {
   const { data } = await api.get('/dashboard/stations')
-  const stations = data.stations || []
+  const stations = dedupeStationsByCode(data.stations || [])
   if (import.meta.env.DEV) console.debug('[SmartRiver] /dashboard/stations:', { count: stations.length })
   return stations
 }
@@ -62,11 +67,59 @@ export async function getActiveWarnings() {
   return data.items || []
 }
 
+const CANONICAL_STATION_CODES = ['S01', 'S02', 'S03', 'S04', 'S05', 'S06', 'S07']
+
+/** One row per station_code (S01–S07); merges legacy rows keyed by river name only. */
+export function dedupeStationsByCode(stations) {
+  const byCode = new Map()
+  const riverToCode = {
+    'Sungai Klang': 'S01',
+    'Sungai Gombak': 'S02',
+    'Sungai Pinang': 'S03',
+    'Sungai Kulim': 'S04',
+    'Sungai Perak': 'S05',
+    'Sungai Sarawak': 'S06',
+    'Sungai Kinabatangan': 'S07',
+  }
+  for (const s of stations || []) {
+    let code = String(s.station_code || '').trim().toUpperCase()
+    if (!CANONICAL_STATION_CODES.includes(code)) {
+      const rn = (s.river_name || s.station_name || '').trim()
+      code = riverToCode[rn] || code
+    }
+    if (!code || !CANONICAL_STATION_CODES.includes(code)) continue
+    const prev = byCode.get(code)
+    const row = {
+      ...s,
+      station_code: code,
+      station_name: (s.river_name || s.station_name || rnFromCode(code)).trim(),
+      river_name: (s.river_name || s.station_name || rnFromCode(code)).trim(),
+    }
+    if (!prev || String(row.last_reading_date || '') >= String(prev.last_reading_date || '')) {
+      byCode.set(code, row)
+    }
+  }
+  return [...byCode.values()].sort((a, b) => a.station_code.localeCompare(b.station_code))
+}
+
+function rnFromCode(code) {
+  const map = {
+    S01: 'Sungai Klang',
+    S02: 'Sungai Gombak',
+    S03: 'Sungai Pinang',
+    S04: 'Sungai Kulim',
+    S05: 'Sungai Perak',
+    S06: 'Sungai Sarawak',
+    S07: 'Sungai Kinabatangan',
+  }
+  return map[code] || code
+}
+
 /** Prefer API river_name on each station; fallback for legacy rows. */
 export function uniqueRiverNamesFromStations(stations) {
   const out = new Set()
-  ;(stations || []).forEach((s) => {
-    const n = (s.river_name || '').trim() || (s.station_name || s.station_code || '').trim()
+  dedupeStationsByCode(stations).forEach((s) => {
+    const n = (s.river_name || '').trim()
     if (n) out.add(n)
   })
   return [...out].sort()

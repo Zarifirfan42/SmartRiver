@@ -19,54 +19,53 @@ from typing import Optional
 # Configurable map: station_code → canonical river name (Malaysia examples)
 # Extend with new codes (e.g. S06) without changing ML feature columns.
 # ---------------------------------------------------------------------------
-# Canonical codes S01–S05 (DOE-style deployment); optional codes may be appended.
+# Seven monitoring stations (Peninsular + Sarawak + Sabah).
 RIVER_NAME_BY_STATION_CODE: dict[str, str] = {
     "S01": "Sungai Klang",
     "S02": "Sungai Gombak",
     "S03": "Sungai Pinang",
     "S04": "Sungai Kulim",
     "S05": "Sungai Perak",
-    "S06": "Sungai Muda",
-    # Planned DOE-style Sabah / Sarawak placeholders (no CSV required yet).
-    "SW01": "Sungai Sarawak",
-    "SW02": "Sungai Baram",
-    "SB01": "Sungai Papar",
-    "SB02": "Sungai Kinabatangan",
+    "S06": "Sungai Sarawak",
+    "S07": "Sungai Kinabatangan",
 }
 
-# Shown in /dashboard/stations when no upload exists yet — UI labels as "Data coming soon".
-COMING_SOON_STATIONS: tuple[dict[str, str], ...] = (
-    {
-        "station_code": "SW01",
-        "station_name": "Kuching corridor (planned)",
-        "river_name": "Sungai Sarawak",
-        "state": "Sarawak",
-    },
-    {
-        "station_code": "SW02",
-        "station_name": "Miri basin (planned)",
-        "river_name": "Sungai Baram",
-        "state": "Sarawak",
-    },
-    {
-        "station_code": "SB01",
-        "station_name": "West coast (planned)",
-        "river_name": "Sungai Papar",
-        "state": "Sabah",
-    },
-    {
-        "station_code": "SB02",
-        "station_name": "East coast (planned)",
-        "river_name": "Sungai Kinabatangan",
-        "state": "Sabah",
-    },
-)
+CANONICAL_STATION_CODES: tuple[str, ...] = tuple(RIVER_NAME_BY_STATION_CODE.keys())
+
+RIVER_NAME_TO_STATION_CODE: dict[str, str] = {
+    name: code for code, name in RIVER_NAME_BY_STATION_CODE.items()
+}
+
+# No placeholder stations — Sabah/Sarawak are S06 (Sarawak) and S07 (Kinabatangan) with CSV data.
+COMING_SOON_STATIONS: tuple[dict[str, str], ...] = ()
 
 UNKNOWN_RIVER_LABEL = "Unknown River"
 
 
+def canonical_river_names() -> frozenset[str]:
+    return frozenset(RIVER_NAME_BY_STATION_CODE.values())
+
+
+def is_canonical_station_record(
+    station_code: Optional[str] = None,
+    station_name: Optional[str] = None,
+    river_name: Optional[str] = None,
+) -> bool:
+    """True when the row belongs to one of the seven deployed stations (S01–S07)."""
+    code = normalize_station_code(station_code)
+    if code in RIVER_NAME_BY_STATION_CODE:
+        return True
+    names = canonical_river_names()
+    for label in (river_name, station_name):
+        n = (label or "").strip()
+        if n in names:
+            return True
+    resolved = river_name_for_station(code, station_name)
+    return resolved in names
+
+
 def coming_soon_station_templates() -> list[dict[str, str]]:
-    """Sabah/Sarawak placeholder rows merged into station lists for selectors and maps."""
+    """Reserved for future placeholders; currently empty (all rivers use S01–S07)."""
     return [dict(row) for row in COMING_SOON_STATIONS]
 
 # DOE basin / short labels (e.g. SUNGAI column) → display name used in dashboard filters
@@ -78,6 +77,8 @@ SUNGAI_BASIN_TO_RIVER: dict[str, str] = {
     "PERAK": "Sungai Perak",
     "GOMBAK": "Sungai Gombak",
     "MUDA": "Sungai Muda",
+    "SARAWAK": "Sungai Sarawak",
+    "KINABATANGAN": "Sungai Kinabatangan",
 }
 
 
@@ -123,6 +124,27 @@ def normalize_station_code(code: Optional[str]) -> str:
     if code is None:
         return ""
     return str(code).strip().upper()
+
+
+def resolve_canonical_station_code(
+    station_code: Optional[str] = None,
+    station_name: Optional[str] = None,
+) -> str:
+    """
+    Map any station label to S01–S07 when known (avoids S06 vs 'Sungai Sarawak' duplicates).
+    """
+    code = normalize_station_code(station_code)
+    if code in RIVER_NAME_BY_STATION_CODE:
+        return code
+    label = (station_name or station_code or "").strip()
+    if not label:
+        return ""
+    if label in RIVER_NAME_TO_STATION_CODE:
+        return RIVER_NAME_TO_STATION_CODE[label]
+    alt = normalize_station_code(label)
+    if alt in RIVER_NAME_BY_STATION_CODE:
+        return alt
+    return code or label
 
 
 def river_name_for_station(

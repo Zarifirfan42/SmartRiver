@@ -1,21 +1,9 @@
 /**
- * Task 5 — comparative trends, WQI calendar heatmap, parameter stress, coverage, Sabah/Sarawak placeholders.
+ * River insights — comparative trends and WQI calendar heatmap.
  */
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import {
-  Chart as ChartJS,
-  CategoryScale,
-  LinearScale,
-  BarElement,
-  Title,
-  Tooltip,
-  Legend,
-} from 'chart.js'
-import { Bar } from 'react-chartjs-2'
 import CompareStationsChart from '../components/charts/CompareStationsChart'
 import * as dashboardApi from '../api/dashboard'
-
-ChartJS.register(CategoryScale, LinearScale, BarElement, Title, Tooltip, Legend)
 
 function daysInYear(year) {
   const y = Number(year)
@@ -62,6 +50,22 @@ function heatColor(cell) {
   return '#ef4444'
 }
 
+const HM_MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
+/** GitHub-style: Mon, Wed, Fri beside rows (Sun=0 … Sat=6). */
+const HM_DAY_LABELS = ['', 'Mon', '', 'Wed', '', 'Fri', '']
+
+function monthLabelForWeek(year, weekIndex, pad, dim) {
+  for (let r = 0; r < 7; r++) {
+    const idx = weekIndex * 7 + r
+    if (idx < pad) continue
+    const dayNum = idx - pad + 1
+    if (dayNum < 1 || dayNum > dim) continue
+    const d = new Date(year, 0, dayNum)
+    if (d.getDate() === 1) return HM_MONTHS[d.getMonth()]
+  }
+  return ''
+}
+
 export default function RiverInsightsPage() {
   const [stations, setStations] = useState([])
   const [years, setYears] = useState([])
@@ -77,12 +81,6 @@ export default function RiverInsightsPage() {
   const [hmYear, setHmYear] = useState(new Date().getFullYear())
   const [hmCells, setHmCells] = useState([])
   const [hmLoading, setHmLoading] = useState(false)
-
-  const [pcStation, setPcStation] = useState('')
-  const [pcDate, setPcDate] = useState('')
-  const [pcData, setPcData] = useState(null)
-  const [pcErr, setPcErr] = useState('')
-  const [pcLoading, setPcLoading] = useState(false)
 
   useEffect(() => {
     let cancelled = false
@@ -168,70 +166,6 @@ export default function RiverInsightsPage() {
     }
   }
 
-  const runParameterChart = async () => {
-    setPcErr('')
-    setPcData(null)
-    if (!pcStation.trim() || !pcDate.trim()) {
-      setPcErr('Enter station code and date.')
-      return
-    }
-    setPcLoading(true)
-    try {
-      const data = await dashboardApi.getParameterContribution({
-        station_code: pcStation.trim(),
-        date: pcDate.trim().slice(0, 10),
-      })
-      setPcData(data)
-    } catch (e) {
-      const d = e?.response?.data?.detail
-      const msg = Array.isArray(d) ? d.map((x) => (typeof x === 'string' ? x : x.msg || JSON.stringify(x))).join('; ') : d
-      setPcErr(typeof msg === 'string' && msg ? msg : 'No breakdown available for this selection.')
-      setPcData(null)
-    } finally {
-      setPcLoading(false)
-    }
-  }
-
-  const paramChartData = useMemo(() => {
-    if (!pcData?.parameters?.length) return null
-    const params = [...pcData.parameters].sort((a, b) => Number(b.contribution_pct) - Number(a.contribution_pct))
-    return {
-      labels: params.map((p) => p.label),
-      datasets: [
-        {
-          label: 'Relative stress %',
-          data: params.map((p) => p.contribution_pct),
-          backgroundColor: 'rgba(79, 70, 229, 0.55)',
-          borderColor: 'rgba(67, 56, 202, 0.9)',
-          borderWidth: 1,
-        },
-      ],
-    }
-  }, [pcData])
-
-  const paramOptions = {
-    indexAxis: 'y',
-    responsive: true,
-    maintainAspectRatio: false,
-    plugins: {
-      legend: { display: false },
-      title: {
-        display: true,
-        text: pcData ? `Parameter stress · WQI ${pcData.wqi ?? '—'} (${pcData.date})` : 'Parameter contribution',
-        font: { size: 14 },
-      },
-    },
-    scales: {
-      x: {
-        title: { display: true, text: 'Share of total stress (%)' },
-        min: 0,
-        suggestedMax: 100,
-        grid: { color: '#e2e8f0' },
-      },
-      y: { grid: { display: false } },
-    },
-  }
-
   if (loading) {
     return <p className="text-surface-500">Loading river insights…</p>
   }
@@ -241,65 +175,11 @@ export default function RiverInsightsPage() {
       <div>
         <h1 className="font-display text-2xl font-semibold text-surface-900">River insights</h1>
         <p className="text-surface-600 mt-2 text-sm max-w-3xl">
-          Compare stations, inspect daily WQI patterns, see which parameters drove a low score (when chemistry exists in
-          SQLite), check data coverage, and browse Sabah/Sarawak placeholders listed as &quot;Data coming soon&quot;.
+          Compare stations side-by-side and inspect daily WQI patterns on a GitHub-style calendar heatmap
+          for all seven rivers (S01–S07).
         </p>
         {err ? <p className="text-amber-700 text-sm mt-2">{err}</p> : null}
       </div>
-
-      {/* Coverage */}
-      <section className="rounded-xl border border-surface-200 bg-white p-5 shadow-sm">
-        <h2 className="font-display font-semibold text-surface-800 mb-1">Data coverage</h2>
-        <p className="text-sm text-surface-500 mb-4">
-          Distinct sampling days divided by calendar span (first to last reading). Higher is more continuous history.
-        </p>
-        <div className="overflow-x-auto">
-          <table className="min-w-full text-sm">
-            <thead>
-              <tr className="text-left text-surface-500 border-b border-surface-200">
-                <th className="py-2 pr-4">Station</th>
-                <th className="py-2 pr-4">River</th>
-                <th className="py-2 pr-4">Coverage</th>
-                <th className="py-2 pr-4">Range</th>
-              </tr>
-            </thead>
-            <tbody>
-              {stations.map((s) => {
-                const code = s.station_code || s.station_name
-                const pct = Number(s.data_coverage_pct ?? 0)
-                const coming = Boolean(s.data_coming_soon)
-                return (
-                  <tr key={code} className="border-b border-surface-100">
-                    <td className="py-2 pr-4 font-medium text-surface-800">
-                      {code}
-                      {coming ? (
-                        <span className="ml-2 inline-flex items-center rounded-full bg-amber-50 px-2 py-0.5 text-[11px] font-semibold text-amber-800">
-                          Data coming soon
-                        </span>
-                      ) : null}
-                    </td>
-                    <td className="py-2 pr-4 text-surface-600">{s.river_name || '—'}</td>
-                    <td className="py-2 pr-4 w-48">
-                      <div className="flex items-center gap-2">
-                        <div className="h-2 flex-1 rounded-full bg-surface-100 overflow-hidden">
-                          <div
-                            className={`h-full rounded-full ${coming ? 'bg-surface-300' : 'bg-cyan-600'}`}
-                            style={{ width: `${Math.min(100, Math.max(0, pct))}%` }}
-                          />
-                        </div>
-                        <span className="text-xs text-surface-600 tabular-nums w-12 text-right">
-                          {coming ? '—' : `${pct}%`}
-                        </span>
-                      </div>
-                    </td>
-                    <td className="py-2 pr-4 text-surface-600 text-xs">{s.data_coverage_range_label || '—'}</td>
-                  </tr>
-                )
-              })}
-            </tbody>
-          </table>
-        </div>
-      </section>
 
       {/* Compare */}
       <section className="rounded-xl border border-surface-200 bg-white p-5 shadow-sm">
@@ -394,69 +274,60 @@ export default function RiverInsightsPage() {
           <p className="text-surface-500 text-sm">Loading calendar…</p>
         ) : (
           <div className="overflow-x-auto pb-2">
-            <div className="inline-flex gap-0.5">
-              {heatGrid.map((col, wi) => (
-                <div key={wi} className="flex flex-col gap-0.5">
-                  {col.map((slot, ri) => (
+            <div className="inline-flex flex-col">
+              {/* Month labels row */}
+              <div className="flex pl-9 mb-1">
+                {heatGrid.map((_, wi) => {
+                  const dim = daysInYear(hmYear)
+                  const pad = new Date(hmYear, 0, 1).getDay()
+                  const label = monthLabelForWeek(hmYear, wi, pad, dim)
+                  return (
                     <div
-                      key={`${wi}-${ri}`}
-                      title={
-                        slot.cell?.date
-                          ? `${slot.cell.date}: WQI ${slot.cell.wqi ?? '—'}`
-                          : ''
-                      }
-                      className="w-2.5 h-2.5 rounded-sm shrink-0"
-                      style={{ backgroundColor: slot.cell ? heatColor(slot.cell) : 'transparent' }}
-                    />
+                      key={`m-${wi}`}
+                      className="w-[11px] shrink-0 text-[10px] text-surface-400 leading-none overflow-visible whitespace-nowrap"
+                    >
+                      {label}
+                    </div>
+                  )
+                })}
+              </div>
+              <div className="flex gap-1">
+                {/* Day-of-week labels (Mon / Wed / Fri) */}
+                <div className="flex flex-col gap-0.5 w-8 shrink-0 pt-0">
+                  {HM_DAY_LABELS.map((lbl, ri) => (
+                    <div
+                      key={`d-${ri}`}
+                      className="h-2.5 text-[9px] text-surface-400 leading-[10px] text-right pr-1"
+                    >
+                      {lbl}
+                    </div>
                   ))}
                 </div>
-              ))}
+                {/* Week columns × day rows */}
+                <div className="inline-flex gap-0.5">
+                  {heatGrid.map((col, wi) => (
+                    <div key={wi} className="flex flex-col gap-0.5">
+                      {col.map((slot, ri) => (
+                        <div
+                          key={`${wi}-${ri}`}
+                          title={
+                            slot.cell?.date
+                              ? `${slot.cell.date}: WQI ${slot.cell.wqi ?? '—'}`
+                              : ''
+                          }
+                          className="w-2.5 h-2.5 rounded-sm shrink-0"
+                          style={{ backgroundColor: slot.cell ? heatColor(slot.cell) : 'transparent' }}
+                        />
+                      ))}
+                    </div>
+                  ))}
+                </div>
+              </div>
             </div>
-            <p className="text-[11px] text-surface-500 mt-2">
-              Columns are weeks (left → right); rows are Sun → Sat. Matches a GitHub-style contribution grid.
+            <p className="text-[11px] text-surface-500 mt-2 pl-9">
+              Columns = weeks (Jan → Dec); rows = Sun → Sat. Month labels align to the first week of each month.
             </p>
           </div>
-        )}
-      </section>
-
-      {/* Parameters */}
-      <section className="rounded-xl border border-surface-200 bg-white p-5 shadow-sm">
-        <h2 className="font-display font-semibold text-surface-800 mb-1">Parameter contribution</h2>
-        <p className="text-sm text-surface-500 mb-4">
-          Uses one day&apos;s chemistry from persisted water-quality rows (upload pipeline). Best for diagnosing low WQI
-          days.
-        </p>
-        <div className="flex flex-wrap gap-4 items-end mb-4">
-          <div>
-            <label className="label">Station code</label>
-            <input
-              className="input-field w-32"
-              value={pcStation}
-              onChange={(e) => setPcStation(e.target.value)}
-              placeholder="S03"
-            />
-          </div>
-          <div>
-            <label className="label">Date</label>
-            <input
-              className="input-field w-40"
-              type="date"
-              value={pcDate}
-              onChange={(e) => setPcDate(e.target.value)}
-            />
-          </div>
-          <button type="button" className="btn-primary text-sm" onClick={runParameterChart} disabled={pcLoading}>
-            {pcLoading ? 'Loading…' : 'Load breakdown'}
-          </button>
-        </div>
-        {pcErr ? <p className="text-amber-700 text-sm mb-3">{pcErr}</p> : null}
-        {pcData?.method_note ? <p className="text-xs text-surface-500 mb-2">{pcData.method_note}</p> : null}
-        {paramChartData ? (
-          <div className="h-72">
-            <Bar data={paramChartData} options={paramOptions} />
-          </div>
-        ) : (
-          <p className="text-surface-500 text-sm">Run a query to see the horizontal bar chart.</p>
         )}
       </section>
     </div>

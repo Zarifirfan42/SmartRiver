@@ -50,8 +50,8 @@ function formatStatus(s) {
 
 export default function PollutionForecastPage() {
   const [stations, setStations] = useState([])
-  /** Canonical river name; scopes historical series + forecast points. */
-  const [river, setRiver] = useState('')
+  /** Canonical river name; scopes historical series + forecast points. Default: Sungai Klang (S01). */
+  const [river, setRiver] = useState('Sungai Klang')
   /** Default to full calendar year so early-year month presets do not hide all future forecast points. */
   const [selectedMonthRange, setSelectedMonthRange] = useState(12)
   const [selectedYear, setSelectedYear] = useState(2026)
@@ -82,8 +82,8 @@ export default function PollutionForecastPage() {
         const list = await dashboardApi.getStations()
         if (!cancelled && Array.isArray(list) && list.length > 0) {
           setStations(list)
-          const rivers = dashboardApi.uniqueRiverNamesFromStations(list)
-          setRiver((r) => r || rivers[0] || '')
+          const rivers = dashboardApi.uniqueRiverNamesFromStations(list.filter((s) => !s.data_coming_soon))
+          setRiver((r) => (r && rivers.includes(r) ? r : rivers[0] || 'Sungai Klang'))
         }
       } catch (e) {
         if (!cancelled) setError(e.message || 'Failed to load stations')
@@ -196,8 +196,7 @@ export default function PollutionForecastPage() {
             className="input-field w-auto min-w-[220px]"
             disabled={loading || stations.length === 0}
           >
-            <option value="">All rivers</option>
-            {dashboardApi.uniqueRiverNamesFromStations(stations).map((rn) => (
+            {dashboardApi.uniqueRiverNamesFromStations(stations.filter((s) => !s.data_coming_soon)).map((rn) => (
               <option key={rn} value={rn}>{rn}</option>
             ))}
           </select>
