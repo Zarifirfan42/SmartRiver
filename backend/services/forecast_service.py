@@ -21,31 +21,36 @@ FORECAST_YEARS = [2026]
 FORECAST_END_DATE = datetime(2026, 12, 31).date()
 
 
-def _load_lstm_artifacts():
-    """Return (model, scaler_bundle, config) or (None, None, None) if unavailable."""
+def _load_lstm_artifacts(station_code: Optional[str] = None):
+    """Return (model, scaler_bundle, config) for a station, with global fallback."""
     import sys
 
     if str(ROOT) not in sys.path:
         sys.path.insert(0, str(ROOT))
 
-    path = ROOT / "ml_models" / "lstm"
-    model_path = path / "lstm_model.keras"
-    if not model_path.is_file():
-        model_path = path / "model.keras"
-    scaler_path = path / "scaler.joblib"
-    if not scaler_path.is_file():
-        scaler_path = path / "lstm_scaler.joblib"
-    if not model_path.is_file() or not scaler_path.is_file():
-        return None, None, None
+    from ml_engine.services.forecasting_service import load_model as load_lstm_bundle
 
-    try:
-        import joblib
-        from ml_engine.services.forecasting_service import load_model as load_lstm_bundle
+    candidates: list[Path] = []
+    code = (station_code or "").strip()
+    if code:
+        candidates.append(ROOT / "ml_models" / "lstm" / "stations" / code)
+    candidates.append(ROOT / "ml_models" / "lstm")
 
-        model, scaler_bundle, cfg = load_lstm_bundle(path)
-        return model, scaler_bundle, cfg or {}
-    except Exception:
-        return None, None, None
+    for base in candidates:
+        model_path = base / "lstm_model.keras"
+        if not model_path.is_file():
+            model_path = base / "model.keras"
+        scaler_path = base / "lstm_scaler.joblib"
+        if not scaler_path.is_file():
+            scaler_path = base / "scaler.joblib"
+        if not model_path.is_file() or not scaler_path.is_file():
+            continue
+        try:
+            model, scaler_bundle, cfg = load_lstm_bundle(base)
+            return model, scaler_bundle, cfg or {}
+        except Exception:
+            continue
+    return None, None, None
 
 
 def _readings_to_station_dataframe(readings: list[dict], station_label: str) -> Optional[object]:
@@ -131,15 +136,6 @@ def run_forecast() -> list[dict]:
     if not readings:
         return []
 
-    model, scaler_bundle, cfg = _load_lstm_artifacts()
-    if model is None or scaler_bundle is None:
-        print("Forecast: LSTM model or scaler not found under ml_models/lstm/ — no 2026 forecast generated.")
-        return []
-
-    seq_len = int(cfg.get("seq_len", 30))
-    add_month_cyclical = bool(cfg.get("add_month_cyclical", False))
-    extra_param_columns = tuple(cfg.get("extra_param_columns") or ())
-
     clear_forecast_alerts()
 
     # Unique station labels (same convention previously used for RF: name or code string).
@@ -170,9 +166,18 @@ def run_forecast() -> list[dict]:
         df_hist = _readings_to_station_dataframe(readings, station)
         if df_hist is None or df_hist.empty:
             continue
-        df_hist = _pad_history_for_seq_len(df_hist, seq_len, station)
         scode = str(df_hist["station_code"].iloc[-1])
 
+        model, scaler_bundle, cfg = _load_lstm_artifacts(scode)
+        if model is None or scaler_bundle is None:
+            logger.warning("Forecast: no LSTM model for station %s (%s) — skipping.", scode, station)
+            continue
+
+        seq_len = int(cfg.get("seq_len", 30))
+        add_month_cyclical = bool(cfg.get("add_month_cyclical", False))
+        extra_param_columns = tuple(cfg.get("extra_param_columns") or ())
+
+        df_hist = _pad_history_for_seq_len(df_hist, seq_len, station)
         df_walk = df_hist.copy()
         current = start_d
 
@@ -186,7 +191,7 @@ def run_forecast() -> list[dict]:
                     add_month_cyclical=add_month_cyclical,
                     extra_param_columns=extra_param_columns,
                 )
-                pred = predict(model, scaler_bundle, window, horizon=1)
+                pred = predict(model, scaler_bundle, window, horizon=1, config=cfg)
                 wqi_next = float(pred.flatten()[0])
                 if not (wqi_next == wqi_next):  # NaN guard
                     raise ValueError("LSTM prediction is NaN")

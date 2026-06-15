@@ -240,6 +240,7 @@ export default function WqiHistoricalForecastCard({
           forecast={fcForChart}
           today={seriesToday}
           viewMode="daily"
+          selectedYear={trendYear || 'All'}
           height={320}
         />
       ) : (

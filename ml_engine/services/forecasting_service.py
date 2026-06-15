@@ -821,6 +821,8 @@ def train(
             else f"{len(lstm_units)}x_lstm_unidirectional"
         ),
         "early_stopping_patience": int(early_stopping_patience),
+        "wqi_scale": "0_100",
+        "station_code": selected_station,
     }
 
     return {
@@ -839,18 +841,22 @@ def train(
 
 
 def _outputs_are_fraction_wqi(scaler_y: Any) -> bool:
-    """True when targets were fit in ~0–1 (fraction) rather than DOE 0–100 scale."""
+    """True only when scaler_y was fit on ~0–1 fractional WQI (legacy mistaken pipeline)."""
     try:
         dmax = float(np.max(scaler_y.data_max_))
         dmin = float(np.min(scaler_y.data_min_))
     except Exception:
         return False
+    # DOE WQI is 0–100; if fitted range exceeds 1.5 the scaler is on original WQI scale.
     return dmax <= 1.5 and dmin >= -0.5
 
 
-def _to_display_wqi(arr: np.ndarray, scaler_y: Any) -> np.ndarray:
-    """Map inverse-transformed targets to 0–100 WQI for dashboard when training used 0–1 targets."""
+def _to_display_wqi(arr: np.ndarray, scaler_y: Any, config: Optional[dict] = None) -> np.ndarray:
+    """Map model outputs to 0–100 WQI for dashboard/API."""
     out = np.asarray(arr, dtype=np.float64)
+    cfg = config or {}
+    if cfg.get("wqi_scale") == "0_100":
+        return np.clip(out, 0.0, 100.0).astype(np.float32)
     if _outputs_are_fraction_wqi(scaler_y):
         out = out * 100.0
     return np.clip(out, 0.0, 100.0).astype(np.float32)
@@ -861,6 +867,7 @@ def predict(
     scaler_bundle: Any,
     window: np.ndarray,
     horizon: Optional[int] = None,
+    config: Optional[dict] = None,
 ) -> np.ndarray:
     """
     Forecast next ``horizon`` WQI steps.
@@ -895,8 +902,8 @@ def predict(
             levels[0] = anchor + row[0]
             for k in range(1, h):
                 levels[k] = levels[k - 1] + row[k]
-            return _to_display_wqi(levels, scaler_y)
-        return _to_display_wqi(pred_target.flatten(), scaler_y)
+            return _to_display_wqi(levels, scaler_y, config)
+        return _to_display_wqi(pred_target.flatten(), scaler_y, config)
 
     # Legacy: single scaler on WQI, window 1D length seq_len (scaled values).
     scaler = scaler_bundle
@@ -910,7 +917,7 @@ def predict(
     if horizon is not None:
         pred_scaled = pred_scaled[:, :horizon]
     inv = scaler.inverse_transform(pred_scaled.reshape(-1, 1)).flatten()
-    return _to_display_wqi(inv, scaler)
+    return _to_display_wqi(inv, scaler, config)
 
 
 def save_model(model: Any, scaler_bundle: Any, config: dict, path: str | Path) -> None:

@@ -1,5 +1,5 @@
 {
-  "generated_at_utc": "2026-06-04T04:00:15.004334+00:00",
+  "generated_at_utc": "2026-06-15T03:26:55.747448+00:00",
   "source_csvs": [
     "datasets\\by_river\\sample_water_quality\\Sungai Gombak.csv",
     "datasets\\by_river\\sample_water_quality\\Sungai Kinabatangan.csv",
@@ -9,13 +9,13 @@
     "datasets\\by_river\\sample_water_quality\\Sungai Pinang.csv",
     "datasets\\by_river\\sample_water_quality\\Sungai Sarawak.csv"
   ],
-  "preprocessed_rows": 2359,
+  "preprocessed_rows": 1828,
   "random_forest_classification": {
-    "accuracy": 0.9571106094808126,
-    "precision_weighted": 0.9576173132200468,
-    "recall_weighted": 0.9571106094808126,
-    "f1_weighted": 0.9571437102556096,
-    "f1_macro": 0.906362748803225,
+    "accuracy": 0.9525959367945824,
+    "precision_weighted": 0.9509983858145131,
+    "recall_weighted": 0.9525959367945824,
+    "f1_weighted": 0.9506358931834584,
+    "f1_macro": 0.8949584278155708,
     "labels": [
       "clean",
       "slightly_polluted",
@@ -29,13 +29,13 @@
       ],
       [
         5,
-        328,
-        7
+        327,
+        4
       ],
       [
         0,
-        7,
-        25
+        12,
+        24
       ]
     ],
     "classification_report": {
@@ -46,48 +46,48 @@
         "support": 71.0
       },
       "slightly_polluted": {
-        "precision": 0.9791044776119403,
-        "recall": 0.9647058823529412,
-        "f1-score": 0.9718518518518519,
-        "support": 340.0
+        "precision": 0.9646017699115044,
+        "recall": 0.9732142857142857,
+        "f1-score": 0.9688888888888889,
+        "support": 336.0
       },
       "polluted": {
-        "precision": 0.78125,
-        "recall": 0.78125,
-        "f1-score": 0.78125,
-        "support": 32.0
+        "precision": 0.8571428571428571,
+        "recall": 0.6666666666666666,
+        "f1-score": 0.75,
+        "support": 36.0
       },
-      "accuracy": 0.9571106094808126,
+      "accuracy": 0.9525959367945824,
       "macro avg": {
-        "precision": 0.8981883346425766,
-        "recall": 0.9153186274509805,
-        "f1-score": 0.906362748803225,
+        "precision": 0.9186517177900503,
+        "recall": 0.8799603174603173,
+        "f1-score": 0.8949584278155708,
         "support": 443.0
       },
       "weighted avg": {
-        "precision": 0.9576173132200468,
-        "recall": 0.9571106094808126,
-        "f1-score": 0.9571437102556096,
+        "precision": 0.9509983858145131,
+        "recall": 0.9525959367945824,
+        "f1-score": 0.9506358931834584,
         "support": 443.0
       }
     },
     "cross_validation": {
       "fold_accuracy": [
-        0.9191919191919192,
-        0.941952506596306,
-        0.9535452322738386,
-        0.9721254355400697,
-        0.9484193011647255
+        0.9672131147540983,
+        0.9525959367945824,
+        0.9396751740139211,
+        0.9234234234234234,
+        0.9644808743169399
       ],
-      "mean_accuracy": 0.9470468789533719,
-      "std_accuracy": 0.017174967552229175,
+      "mean_accuracy": 0.9494777046605931,
+      "std_accuracy": 0.016274387364370126,
       "n_folds": 5,
       "n_folds_evaluated": 5,
       "n_unique_groups": 7
     },
     "split_info": {
       "test_size": 0.2,
-      "train_rows": 1916,
+      "train_rows": 1385,
       "test_rows": 443,
       "group_column": "station_code",
       "group_disjoint": true
@@ -102,39 +102,39 @@
     ]
   },
   "lstm_regression": {
-    "mse": 0.043632620770271906,
-    "rmse": 0.2088842281510787,
-    "mae": 0.1613625510330108,
-    "r2": -0.008661075080495406,
+    "mse": 123.14820177896473,
+    "rmse": 11.097215947207873,
+    "mae": 8.41214260351253,
+    "r2": -0.026453746591666993,
     "r2_vs_test_mean": {
-      "r2": -0.008661075080495406,
-      "r2_sklearn": -0.008661075080495406,
+      "r2": -0.026453746591666993,
+      "r2_sklearn": -0.026453746591666993,
       "matches_sklearn": true,
-      "mean_y_test": 0.4962336423099998,
-      "ss_res": 22.601697559000847,
-      "ss_tot": 22.407623449925573,
-      "n_points": 518,
+      "mean_y_test": 70.78205857795624,
+      "ss_res": 31895.384260751867,
+      "ss_tot": 31073.37701933505,
+      "n_points": 259,
       "formula": "R2 = 1 - sum((y_test - y_pred)^2) / sum((y_test - mean(y_test))^2)"
     },
     "baseline": {
       "strategy": "previous_timestep_wqi",
-      "rmse": 0.29990560290006923,
-      "mae": 0.24079976967021724
+      "rmse": 15.239984503809328,
+      "mae": 12.219886007254079
     },
     "improvement_vs_baseline_pct": {
-      "rmse": 30.35000809215276,
-      "mae": 32.988909726117335
+      "rmse": 27.183548353122962,
+      "mae": 31.16022032841519
     },
     "split_info": {
-      "n_sequences_total": 373,
-      "n_train": 270,
-      "n_val": 29,
-      "n_test": 74,
+      "n_sequences_total": 186,
+      "n_train": 135,
+      "n_val": 14,
+      "n_test": 37,
       "test_ratio": 0.2,
       "val_ratio_of_train_val": 0.1,
       "shuffle_windows": false,
       "keras_fit_shuffle": false,
-      "station_code_used": "S05",
+      "station_code_used": "S04",
       "lag_days": [
         1,
         7,
@@ -162,21 +162,462 @@
       "early_stopping_patience": 10,
       "seq_len": 30
     },
-    "final_train_loss": [
-      0.021406322717666626
+    "stations_trained": [
+      "S01",
+      "S02",
+      "S03",
+      "S04",
+      "S05",
+      "S06",
+      "S07"
     ],
-    "final_val_loss": [
-      0.025052711367607117
-    ],
+    "per_station": {
+      "S01": {
+        "mse": 113.77644340664546,
+        "rmse": 10.666604117836448,
+        "mae": 7.97772788191032,
+        "r2": -0.050367883903573496,
+        "r2_vs_test_mean": {
+          "r2": -0.050367883903573496,
+          "r2_sklearn": -0.050367883903573496,
+          "matches_sklearn": true,
+          "mean_y_test": 72.89615110340962,
+          "ss_res": 31060.96905001421,
+          "ss_tot": 29571.51444366295,
+          "n_points": 273,
+          "formula": "R2 = 1 - sum((y_test - y_pred)^2) / sum((y_test - mean(y_test))^2)"
+        },
+        "baseline": {
+          "strategy": "previous_timestep_wqi",
+          "rmse": 14.656929289782294,
+          "mae": 11.543473886904543
+        },
+        "improvement_vs_baseline_pct": {
+          "rmse": 27.224837433906433,
+          "mae": 30.889713442669738
+        },
+        "split_info": {
+          "n_sequences_total": 199,
+          "n_train": 144,
+          "n_val": 16,
+          "n_test": 39,
+          "test_ratio": 0.2,
+          "val_ratio_of_train_val": 0.1,
+          "shuffle_windows": false,
+          "keras_fit_shuffle": false,
+          "station_code_used": "S01",
+          "lag_days": [
+            1,
+            7,
+            30
+          ],
+          "monsoon_features": [
+            "monsoon_ne",
+            "monsoon_sw",
+            "monsoon_other"
+          ],
+          "loss": "huber",
+          "huber_delta": 1.0,
+          "direction_loss_weight": 0.0,
+          "target_wqi_diff": false,
+          "random_seed": 42,
+          "add_month_cyclical": false,
+          "use_bidirectional": true,
+          "extra_param_columns": [],
+          "lstm_units": [
+            64,
+            32
+          ],
+          "dropout": 0.2,
+          "architecture": "2x_bidirectional_lstm",
+          "early_stopping_patience": 10,
+          "seq_len": 30
+        }
+      },
+      "S02": {
+        "mse": 103.1772777902413,
+        "rmse": 10.157621660125036,
+        "mae": 7.860690672862495,
+        "r2": -0.14610066611470462,
+        "r2_vs_test_mean": {
+          "r2": -0.14610066611470462,
+          "r2_sklearn": -0.14610066611470462,
+          "matches_sklearn": true,
+          "mean_y_test": 71.56880843494892,
+          "ss_res": 24556.192114077432,
+          "ss_tot": 21425.8597347502,
+          "n_points": 238,
+          "formula": "R2 = 1 - sum((y_test - y_pred)^2) / sum((y_test - mean(y_test))^2)"
+        },
+        "baseline": {
+          "strategy": "previous_timestep_wqi",
+          "rmse": 13.645005404505005,
+          "mae": 10.505292211752854
+        },
+        "improvement_vs_baseline_pct": {
+          "rmse": 25.557950627330506,
+          "mae": 25.17399312254919
+        },
+        "split_info": {
+          "n_sequences_total": 172,
+          "n_train": 125,
+          "n_val": 13,
+          "n_test": 34,
+          "test_ratio": 0.2,
+          "val_ratio_of_train_val": 0.1,
+          "shuffle_windows": false,
+          "keras_fit_shuffle": false,
+          "station_code_used": "S02",
+          "lag_days": [
+            1,
+            7,
+            30
+          ],
+          "monsoon_features": [
+            "monsoon_ne",
+            "monsoon_sw",
+            "monsoon_other"
+          ],
+          "loss": "huber",
+          "huber_delta": 1.0,
+          "direction_loss_weight": 0.0,
+          "target_wqi_diff": false,
+          "random_seed": 42,
+          "add_month_cyclical": false,
+          "use_bidirectional": true,
+          "extra_param_columns": [],
+          "lstm_units": [
+            64,
+            32
+          ],
+          "dropout": 0.2,
+          "architecture": "2x_bidirectional_lstm",
+          "early_stopping_patience": 10,
+          "seq_len": 30
+        }
+      },
+      "S03": {
+        "mse": 113.05788728154144,
+        "rmse": 10.632868252806551,
+        "mae": 8.181035127898188,
+        "r2": -0.19995088086962465,
+        "r2_vs_test_mean": {
+          "r2": -0.19995088086962465,
+          "r2_sklearn": -0.19995088086962465,
+          "matches_sklearn": true,
+          "mean_y_test": 71.21911262350494,
+          "ss_res": 26907.777173006863,
+          "ss_tot": 22424.06551967056,
+          "n_points": 238,
+          "formula": "R2 = 1 - sum((y_test - y_pred)^2) / sum((y_test - mean(y_test))^2)"
+        },
+        "baseline": {
+          "strategy": "previous_timestep_wqi",
+          "rmse": 13.265649069470243,
+          "mae": 10.032005237029518
+        },
+        "improvement_vs_baseline_pct": {
+          "rmse": 19.84660383277296,
+          "mae": 18.45064935073143
+        },
+        "split_info": {
+          "n_sequences_total": 174,
+          "n_train": 126,
+          "n_val": 14,
+          "n_test": 34,
+          "test_ratio": 0.2,
+          "val_ratio_of_train_val": 0.1,
+          "shuffle_windows": false,
+          "keras_fit_shuffle": false,
+          "station_code_used": "S03",
+          "lag_days": [
+            1,
+            7,
+            30
+          ],
+          "monsoon_features": [
+            "monsoon_ne",
+            "monsoon_sw",
+            "monsoon_other"
+          ],
+          "loss": "huber",
+          "huber_delta": 1.0,
+          "direction_loss_weight": 0.0,
+          "target_wqi_diff": false,
+          "random_seed": 42,
+          "add_month_cyclical": false,
+          "use_bidirectional": true,
+          "extra_param_columns": [],
+          "lstm_units": [
+            64,
+            32
+          ],
+          "dropout": 0.2,
+          "architecture": "2x_bidirectional_lstm",
+          "early_stopping_patience": 10,
+          "seq_len": 30
+        }
+      },
+      "S04": {
+        "mse": 123.14820177896473,
+        "rmse": 11.097215947207873,
+        "mae": 8.41214260351253,
+        "r2": -0.026453746591666993,
+        "r2_vs_test_mean": {
+          "r2": -0.026453746591666993,
+          "r2_sklearn": -0.026453746591666993,
+          "matches_sklearn": true,
+          "mean_y_test": 70.78205857795624,
+          "ss_res": 31895.384260751867,
+          "ss_tot": 31073.37701933505,
+          "n_points": 259,
+          "formula": "R2 = 1 - sum((y_test - y_pred)^2) / sum((y_test - mean(y_test))^2)"
+        },
+        "baseline": {
+          "strategy": "previous_timestep_wqi",
+          "rmse": 15.239984503809328,
+          "mae": 12.219886007254079
+        },
+        "improvement_vs_baseline_pct": {
+          "rmse": 27.183548353122962,
+          "mae": 31.16022032841519
+        },
+        "split_info": {
+          "n_sequences_total": 186,
+          "n_train": 135,
+          "n_val": 14,
+          "n_test": 37,
+          "test_ratio": 0.2,
+          "val_ratio_of_train_val": 0.1,
+          "shuffle_windows": false,
+          "keras_fit_shuffle": false,
+          "station_code_used": "S04",
+          "lag_days": [
+            1,
+            7,
+            30
+          ],
+          "monsoon_features": [
+            "monsoon_ne",
+            "monsoon_sw",
+            "monsoon_other"
+          ],
+          "loss": "huber",
+          "huber_delta": 1.0,
+          "direction_loss_weight": 0.0,
+          "target_wqi_diff": false,
+          "random_seed": 42,
+          "add_month_cyclical": false,
+          "use_bidirectional": true,
+          "extra_param_columns": [],
+          "lstm_units": [
+            64,
+            32
+          ],
+          "dropout": 0.2,
+          "architecture": "2x_bidirectional_lstm",
+          "early_stopping_patience": 10,
+          "seq_len": 30
+        }
+      },
+      "S05": {
+        "mse": 110.94807056760277,
+        "rmse": 10.53318900274759,
+        "mae": 7.45836961324321,
+        "r2": -0.09686097575109587,
+        "r2_vs_test_mean": {
+          "r2": -0.09686097575109587,
+          "r2_sklearn": -0.09686097575109587,
+          "matches_sklearn": true,
+          "mean_y_test": 72.36561427432457,
+          "ss_res": 28735.55027700912,
+          "ss_tot": 26197.987632235636,
+          "n_points": 259,
+          "formula": "R2 = 1 - sum((y_test - y_pred)^2) / sum((y_test - mean(y_test))^2)"
+        },
+        "baseline": {
+          "strategy": "previous_timestep_wqi",
+          "rmse": 14.009077277874047,
+          "mae": 10.80382320154611
+        },
+        "improvement_vs_baseline_pct": {
+          "rmse": 24.811686067406296,
+          "mae": 30.965460336523655
+        },
+        "split_info": {
+          "n_sequences_total": 185,
+          "n_train": 134,
+          "n_val": 14,
+          "n_test": 37,
+          "test_ratio": 0.2,
+          "val_ratio_of_train_val": 0.1,
+          "shuffle_windows": false,
+          "keras_fit_shuffle": false,
+          "station_code_used": "S05",
+          "lag_days": [
+            1,
+            7,
+            30
+          ],
+          "monsoon_features": [
+            "monsoon_ne",
+            "monsoon_sw",
+            "monsoon_other"
+          ],
+          "loss": "huber",
+          "huber_delta": 1.0,
+          "direction_loss_weight": 0.0,
+          "target_wqi_diff": false,
+          "random_seed": 42,
+          "add_month_cyclical": false,
+          "use_bidirectional": true,
+          "extra_param_columns": [],
+          "lstm_units": [
+            64,
+            32
+          ],
+          "dropout": 0.2,
+          "architecture": "2x_bidirectional_lstm",
+          "early_stopping_patience": 10,
+          "seq_len": 30
+        }
+      },
+      "S06": {
+        "mse": 97.29343110323414,
+        "rmse": 9.863743260204725,
+        "mae": 7.565431055618303,
+        "r2": -0.048788410400440574,
+        "r2_vs_test_mean": {
+          "r2": -0.048788410400440574,
+          "r2_sklearn": -0.048788410400440574,
+          "matches_sklearn": true,
+          "mean_y_test": 71.73072706963754,
+          "ss_res": 44949.56516969417,
+          "ss_tot": 42858.563961945256,
+          "n_points": 462,
+          "formula": "R2 = 1 - sum((y_test - y_pred)^2) / sum((y_test - mean(y_test))^2)"
+        },
+        "baseline": {
+          "strategy": "previous_timestep_wqi",
+          "rmse": 13.570663568155526,
+          "mae": 10.570753259006084
+        },
+        "improvement_vs_baseline_pct": {
+          "rmse": 27.315689386400667,
+          "mae": 28.430539714161835
+        },
+        "split_info": {
+          "n_sequences_total": 330,
+          "n_train": 238,
+          "n_val": 26,
+          "n_test": 66,
+          "test_ratio": 0.2,
+          "val_ratio_of_train_val": 0.1,
+          "shuffle_windows": false,
+          "keras_fit_shuffle": false,
+          "station_code_used": "S06",
+          "lag_days": [
+            1,
+            7,
+            30
+          ],
+          "monsoon_features": [
+            "monsoon_ne",
+            "monsoon_sw",
+            "monsoon_other"
+          ],
+          "loss": "huber",
+          "huber_delta": 1.0,
+          "direction_loss_weight": 0.0,
+          "target_wqi_diff": false,
+          "random_seed": 42,
+          "add_month_cyclical": false,
+          "use_bidirectional": true,
+          "extra_param_columns": [],
+          "lstm_units": [
+            64,
+            32
+          ],
+          "dropout": 0.2,
+          "architecture": "2x_bidirectional_lstm",
+          "early_stopping_patience": 10,
+          "seq_len": 30
+        }
+      },
+      "S07": {
+        "mse": 111.27188035902431,
+        "rmse": 10.548548732362395,
+        "mae": 8.445681863919674,
+        "r2": -0.09547670666356622,
+        "r2_vs_test_mean": {
+          "r2": -0.09547670666356622,
+          "r2_sklearn": -0.09547670666356622,
+          "matches_sklearn": true,
+          "mean_y_test": 71.84614947789483,
+          "ss_res": 51407.60872586923,
+          "ss_tot": 46927.15820716863,
+          "n_points": 462,
+          "formula": "R2 = 1 - sum((y_test - y_pred)^2) / sum((y_test - mean(y_test))^2)"
+        },
+        "baseline": {
+          "strategy": "previous_timestep_wqi",
+          "rmse": 14.46980213452155,
+          "mae": 11.126437497517705
+        },
+        "improvement_vs_baseline_pct": {
+          "rmse": 27.099564774309982,
+          "mae": 24.09356664427499
+        },
+        "split_info": {
+          "n_sequences_total": 330,
+          "n_train": 238,
+          "n_val": 26,
+          "n_test": 66,
+          "test_ratio": 0.2,
+          "val_ratio_of_train_val": 0.1,
+          "shuffle_windows": false,
+          "keras_fit_shuffle": false,
+          "station_code_used": "S07",
+          "lag_days": [
+            1,
+            7,
+            30
+          ],
+          "monsoon_features": [
+            "monsoon_ne",
+            "monsoon_sw",
+            "monsoon_other"
+          ],
+          "loss": "huber",
+          "huber_delta": 1.0,
+          "direction_loss_weight": 0.0,
+          "target_wqi_diff": false,
+          "random_seed": 42,
+          "add_month_cyclical": false,
+          "use_bidirectional": true,
+          "extra_param_columns": [],
+          "lstm_units": [
+            64,
+            32
+          ],
+          "dropout": 0.2,
+          "architecture": "2x_bidirectional_lstm",
+          "early_stopping_patience": 10,
+          "seq_len": 30
+        }
+      }
+    },
+    "final_train_loss": null,
+    "final_val_loss": null,
     "seq_len": 30,
     "horizon": 7,
-    "loss_plot_path": "C:\\Users\\irfan\\Downloads\\FYP 2526\\SmartRiver\\ml_models\\lstm\\lstm_training_loss.png",
-    "pred_vs_actual_plot_path": "C:\\Users\\irfan\\Downloads\\FYP 2526\\SmartRiver\\ml_models\\lstm\\lstm_pred_vs_actual_test.png"
+    "loss_plot_path": "C:\\Users\\irfan\\Downloads\\FYP 2526\\SmartRiver\\ml_models\\lstm\\stations\\S04\\lstm_training_loss.png",
+    "pred_vs_actual_plot_path": "C:\\Users\\irfan\\Downloads\\FYP 2526\\SmartRiver\\ml_models\\lstm\\stations\\S04\\lstm_pred_vs_actual_test.png"
   },
   "isolation_forest": {
-    "n_samples": 2359,
-    "n_flagged_anomalies": 118,
-    "anomaly_rate": 0.050021,
+    "n_samples": 1828,
+    "n_flagged_anomalies": 92,
+    "anomaly_rate": 0.050328,
     "feature_columns": [
       "WQI",
       "DO",

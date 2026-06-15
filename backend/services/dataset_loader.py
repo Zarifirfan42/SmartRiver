@@ -492,14 +492,18 @@ def _run_forecast_rehydrate_backfill_live_and_optional_anomaly(df_for_anomaly):
     Shared tail of startup: forecast UI data, merge SQLite uploads, daily series to today, optional anomaly scan.
     df_for_anomaly: default-dataset dataframe for heavy anomaly pass, or None if no default file was loaded.
     """
-    try:
-        from backend.services.forecast_service import run_forecast
+    defer_fc = (os.environ.get("SMARTRIVER_DEFER_FORECAST") or "").strip().lower() in ("1", "true", "yes", "on")
+    if not defer_fc:
+        try:
+            from backend.services.forecast_service import run_forecast
 
-        forecast_list = run_forecast()
-        n = len(forecast_list) if isinstance(forecast_list, list) else 0
-        print(f"Forecast points generated for dashboard: {n}")
-    except Exception as e:
-        print("Forecast generation skipped:", e)
+            forecast_list = run_forecast()
+            n = len(forecast_list) if isinstance(forecast_list, list) else 0
+            print(f"Forecast points generated for dashboard: {n}")
+        except Exception as e:
+            print("Forecast generation skipped:", e)
+    else:
+        print("Startup forecast skipped (SMARTRIVER_DEFER_FORECAST); runs in background from main lifespan.")
 
     try:
         from backend.services.upload_ingest import rehydrate_readings_from_registered_uploads

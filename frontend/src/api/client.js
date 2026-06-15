@@ -6,7 +6,7 @@ import axios from 'axios'
 
 const baseURL =
   import.meta.env.VITE_API_URL ||
-  (import.meta.env.DEV ? '/api/v1' : 'http://localhost:8000/api/v1')
+  (import.meta.env.DEV ? '/api/v1' : '/api/v1')
 
 const resolvedBase = baseURL.startsWith('http')
   ? (baseURL.includes('/api/v1') ? baseURL.replace(/\/$/, '') : `${baseURL.replace(/\/$/, '')}/api/v1`)

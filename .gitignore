@@ -22,12 +22,18 @@ datasets/uploads/*
 !datasets/uploads/.gitkeep
 ml_models/random_forest/*
 !ml_models/random_forest/.gitkeep
+!ml_models/random_forest/model*.joblib
 ml_models/lstm/*
 !ml_models/lstm/.gitkeep
+!ml_models/lstm/stations/
+!ml_models/lstm/stations/**
+ml_models/lstm/stations/**/*.png
 ml_models/isolation_forest/*
 !ml_models/isolation_forest/.gitkeep
+!ml_models/isolation_forest/model.joblib
 ml_models/anomaly_detection/*
 !ml_models/anomaly_detection/.gitkeep
+!ml_models/anomaly_detection/model.joblib
 
 # IDE
 .idea/

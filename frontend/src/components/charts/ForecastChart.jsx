@@ -175,7 +175,14 @@ function ciHalfWidth(wqi) {
   return Math.min(12, Math.max(3, 0.08 * Math.max(w, 1)))
 }
 
-export default function ForecastChart({ historical = [], forecast = [], height = 280, today: todayStr, viewMode = 'monthly' }) {
+export default function ForecastChart({
+  historical = [],
+  forecast = [],
+  height = 280,
+  today: todayStr,
+  viewMode = 'monthly',
+  selectedYear = 'All',
+}) {
   // Classify by today: historical ends at today, forecast starts after today (no overlap).
   const todayDate = todayStr ? parseDateOnly(todayStr) : null
 
@@ -223,9 +230,15 @@ export default function ForecastChart({ historical = [], forecast = [], height =
     histAgg = histAgg.slice(-10)
     fcAgg = fcAgg.slice(-10)
   } else {
-    // daily: up to 365 points max (enough for full year)
-    histAgg = histWithDates.slice(-365)
-    fcAgg = fcWithDates.slice(-365)
+    const isAllYears = !selectedYear || selectedYear === 'All'
+    if (isAllYears) {
+      histAgg = histWithDates
+      fcAgg = fcWithDates
+    } else {
+      // daily: up to 365 points max (enough for full year)
+      histAgg = histWithDates.slice(-365)
+      fcAgg = fcWithDates.slice(-365)
+    }
   }
 
   // Build independent {x,y} series so Chart.js x-axis autoscales to visible datasets (legend toggle).
@@ -247,6 +260,26 @@ export default function ForecastChart({ historical = [], forecast = [], height =
   }
 
   const hasCi = fcPoints.some((p) => p.lo != null && p.hi != null)
+
+  const isAllYears = !selectedYear || selectedYear === 'All'
+  let xMin
+  let xMax
+  if (isAllYears) {
+    xMin = new Date('2023-01-01').getTime()
+    xMax = new Date('2026-12-31').getTime()
+  } else {
+    const yearNum = Number(selectedYear)
+    if (!Number.isNaN(yearNum) && yearNum >= 1000) {
+      xMin = new Date(yearNum, 0, 1).getTime()
+      xMax = new Date(yearNum, 11, 31, 23, 59, 59, 999).getTime()
+    } else {
+      const allTimes = [...histPoints, ...fcPoints.map((p) => p.x)]
+      if (allTimes.length) {
+        xMin = Math.min(...allTimes)
+        xMax = Math.max(...allTimes)
+      }
+    }
+  }
 
   const tension = viewMode === 'daily' ? 0.15 : 0.25
   const ciDatasets = hasCi
@@ -348,6 +381,8 @@ export default function ForecastChart({ historical = [], forecast = [], height =
       ...baseOptions.scales,
       x: {
         type: 'linear',
+        min: xMin,
+        max: xMax,
         title: {
           display: true,
           text: viewMode === 'daily' ? 'Date' : viewMode === 'monthly' ? 'Month' : 'Year',

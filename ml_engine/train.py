@@ -213,7 +213,7 @@ def run_training_from_paths(
         feature_engineering,
     )
     from ml_engine.services.classification_service import train as train_rf, save_model as save_rf
-    from ml_engine.services.forecasting_service import train as train_lstm
+    from ml_engine.services.forecasting_service import train as train_lstm, save_model as save_lstm_bundle
     from ml_engine.services.anomaly_service import train as train_anom, save_model as save_anom
 
     paths = [Path(p).resolve() for p in paths]
@@ -278,46 +278,85 @@ def run_training_from_paths(
     }
 
     lstm_dir = out_root / "lstm"
+    stations_dir = lstm_dir / "stations"
     lstm_dir.mkdir(parents=True, exist_ok=True)
-    lstm_out = train_lstm(
-        df,
-        station_code=lstm_station,
-        seq_len=lstm_seq_len,
-        horizon=lstm_horizon,
-        epochs=lstm_epochs,
-        verbose=lstm_verbose,
-        loss_plot_path=lstm_dir / "lstm_training_loss.png",
-        pred_plot_path=lstm_dir / "lstm_pred_vs_actual_test.png",
-        use_wqi_diff=lstm_use_wqi_diff,
-        direction_loss_weight=lstm_direction_loss_weight,
-        seed=lstm_seed,
-    )
-    lstm_metrics = None
-    if lstm_out.get("error"):
-        print(f"Skipped LSTM: {lstm_out['error']}")
-        metrics_out["lstm_regression"] = {"error": lstm_out["error"]}
+    stations_dir.mkdir(parents=True, exist_ok=True)
+
+    # LSTM must use raw DOE WQI (0–100) from df_base — NOT the MinMax-normalized engineered frame.
+    if "station_code" in df_base.columns and "WQI" in df_base.columns:
+        print("\n[WQI distribution per station — LSTM trains on raw 0–100 scale]")
+        print(df_base.groupby("station_code")["WQI"].agg(["count", "mean", "min", "max", "std"]).round(2))
+
+    if lstm_station:
+        station_codes = [str(lstm_station).strip()]
+    elif "station_code" in df_base.columns:
+        station_codes = sorted(df_base["station_code"].dropna().astype(str).str.strip().unique())
     else:
-        lstm_metrics = lstm_out.get("metrics") or {}
+        station_codes = [None]
+
+    lstm_per_station_metrics: dict[str, dict] = {}
+    lstm_metrics = None
+    min_rows = lstm_seq_len + lstm_horizon + 10
+
+    for scode in station_codes:
+        if scode:
+            sub = df_base[df_base["station_code"].astype(str).str.strip() == scode].copy()
+            label = scode
+        else:
+            sub = df_base.copy()
+            label = "all"
+
+        if len(sub) < min_rows:
+            print(f"Skip LSTM {label}: insufficient rows ({len(sub)} < {min_rows})")
+            continue
+
+        station_dir = stations_dir / label if scode else lstm_dir
+        station_dir.mkdir(parents=True, exist_ok=True)
+        print(f"\nTraining LSTM for {label} ({len(sub)} rows, WQI mean={sub['WQI'].mean():.1f})...")
+
+        lstm_out = train_lstm(
+            sub,
+            station_code=scode,
+            seq_len=lstm_seq_len,
+            horizon=lstm_horizon,
+            epochs=lstm_epochs,
+            verbose=lstm_verbose,
+            loss_plot_path=station_dir / "lstm_training_loss.png",
+            pred_plot_path=station_dir / "lstm_pred_vs_actual_test.png",
+            use_wqi_diff=lstm_use_wqi_diff,
+            direction_loss_weight=lstm_direction_loss_weight,
+            seed=lstm_seed,
+        )
+        if lstm_out.get("error"):
+            print(f"  LSTM {label} skipped: {lstm_out['error']}")
+            continue
+
+        lstm_cfg = {"seq_len": lstm_seq_len, "horizon": lstm_horizon, "station_code": scode, "wqi_scale": "0_100"}
+        lstm_cfg.update(lstm_out.get("config") or {})
+        save_lstm_bundle(lstm_out["model"], lstm_out.get("scaler"), lstm_cfg, station_dir)
+        lstm_per_station_metrics[label] = lstm_out.get("metrics") or {}
+        print(f"  Saved LSTM: {station_dir / 'lstm_model.keras'}")
+
+    if lstm_per_station_metrics:
+        # Summary metrics: prefer S04 (Kulim) for backward-compatible top-level block.
+        summary_key = "S04" if "S04" in lstm_per_station_metrics else next(iter(lstm_per_station_metrics))
+        lstm_metrics = lstm_per_station_metrics[summary_key]
         metrics_out["lstm_regression"] = {
             **_lstm_metrics_for_training_json(lstm_metrics),
-            "final_train_loss": (lstm_out.get("train_loss") or [])[-1:] if lstm_out.get("train_loss") else None,
-            "final_val_loss": (lstm_out.get("val_loss") or [])[-1:] if lstm_out.get("val_loss") else None,
+            "stations_trained": list(lstm_per_station_metrics.keys()),
+            "per_station": {
+                k: _lstm_metrics_for_training_json(v) for k, v in lstm_per_station_metrics.items()
+            },
+            "final_train_loss": None,
+            "final_val_loss": None,
             "seq_len": lstm_seq_len,
             "horizon": lstm_horizon,
-            "loss_plot_path": lstm_out.get("loss_plot_path"),
-            "pred_vs_actual_plot_path": lstm_out.get("pred_vs_actual_plot_path"),
+            "loss_plot_path": str(stations_dir / summary_key / "lstm_training_loss.png"),
+            "pred_vs_actual_plot_path": str(stations_dir / summary_key / "lstm_pred_vs_actual_test.png"),
         }
-        model_file = lstm_dir / "lstm_model.keras"
-        lstm_out["model"].save(model_file)
-        import joblib
-
-        lstm_cfg = {"seq_len": lstm_seq_len, "horizon": lstm_horizon}
-        lstm_cfg.update(lstm_out.get("config") or {})
-        joblib.dump(
-            {"scaler": lstm_out.get("scaler"), "config": lstm_cfg},
-            lstm_dir / "scaler.joblib",
-        )
-        print(f"Saved LSTM: {model_file}")
+    else:
+        print("Skipped LSTM: no station had sufficient data or all training runs failed.")
+        metrics_out["lstm_regression"] = {"error": "No per-station LSTM models trained"}
 
     an_out = train_anom(df)
     an_path = out_root / "anomaly_detection" / "model.joblib"

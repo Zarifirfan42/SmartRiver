@@ -62,6 +62,24 @@ async def lifespan(app: FastAPI):
         start_daily_scheduler()
     except Exception as e:
         print("Live simulation scheduler skipped:", e)
+
+    # Defer LSTM 2026 forecast so the server passes health checks quickly (Render/Railway).
+    defer_fc = (os.environ.get("SMARTRIVER_DEFER_FORECAST") or "").strip().lower() in ("1", "true", "yes", "on")
+    if defer_fc:
+        import threading
+
+        def _background_forecast() -> None:
+            try:
+                from backend.services.forecast_service import run_forecast
+
+                n = len(run_forecast() or [])
+                print(f"Background forecast complete: {n} points.")
+            except Exception as exc:
+                print("Background forecast failed:", exc)
+
+        threading.Thread(target=_background_forecast, daemon=True).start()
+        print("LSTM forecast scheduled in background (SMARTRIVER_DEFER_FORECAST).")
+
     yield
 
 
@@ -116,33 +134,11 @@ try:
 except Exception as e:
     print("Warning: Auth routes could not be loaded:", e)
 
+# Production: serve built React app from frontend/dist (same origin as API)
+_FRONTEND_DIST = _root / "frontend" / "dist"
+_SPA_MODE = _FRONTEND_DIST.is_dir() and (_FRONTEND_DIST / "index.html").is_file()
 
-@app.get("/")
-def root():
-    return {
-        "message": "SmartRiver API",
-        "docs": "/docs",
-        "app": "Open the web app at http://localhost:3000 for login, dashboard, and all pages.",
-    }
-
-
-# Redirect browser users who hit the API URL to the frontend app
 FRONTEND_URL = os.environ.get("FRONTEND_URL", "http://localhost:3000")
-
-
-@app.get("/login")
-def redirect_login():
-    return RedirectResponse(url=f"{FRONTEND_URL}/login", status_code=302)
-
-
-@app.get("/register")
-def redirect_register():
-    return RedirectResponse(url=f"{FRONTEND_URL}/register", status_code=302)
-
-
-@app.get("/dashboard")
-def redirect_dashboard():
-    return RedirectResponse(url=f"{FRONTEND_URL}/dashboard", status_code=302)
 
 
 @app.get("/health")
@@ -154,3 +150,52 @@ def health():
 def api_health():
     """Health check under /api so Vite proxy /api → backend can verify connectivity."""
     return {"status": "ok"}
+
+
+if not _SPA_MODE:
+
+    @app.get("/")
+    def root():
+        return {
+            "message": "SmartRiver API",
+            "docs": "/docs",
+            "app": "Open the web app at http://localhost:3000 for login, dashboard, and all pages.",
+        }
+
+    @app.get("/login")
+    def redirect_login():
+        return RedirectResponse(url=f"{FRONTEND_URL}/login", status_code=302)
+
+    @app.get("/register")
+    def redirect_register():
+        return RedirectResponse(url=f"{FRONTEND_URL}/register", status_code=302)
+
+    @app.get("/dashboard")
+    def redirect_dashboard():
+        return RedirectResponse(url=f"{FRONTEND_URL}/dashboard", status_code=302)
+
+else:
+    from fastapi.staticfiles import StaticFiles
+    from fastapi.responses import FileResponse
+    from fastapi import HTTPException
+
+    _assets_dir = _FRONTEND_DIST / "assets"
+    if _assets_dir.is_dir():
+        app.mount("/assets", StaticFiles(directory=str(_assets_dir)), name="frontend-assets")
+
+    _images_dir = _FRONTEND_DIST / "images"
+    if _images_dir.is_dir():
+        app.mount("/images", StaticFiles(directory=str(_images_dir)), name="frontend-images")
+
+    @app.get("/")
+    def spa_root():
+        return FileResponse(_FRONTEND_DIST / "index.html")
+
+    @app.get("/{spa_path:path}")
+    def spa_fallback(spa_path: str):
+        if spa_path.startswith("api") or spa_path in ("docs", "openapi.json", "redoc", "health"):
+            raise HTTPException(status_code=404)
+        candidate = _FRONTEND_DIST / spa_path
+        if spa_path and candidate.is_file():
+            return FileResponse(candidate)
+        return FileResponse(_FRONTEND_DIST / "index.html")

@@ -278,6 +278,7 @@ export default function PollutionForecastPage() {
                 }))}
                 today={today}
                 viewMode="daily"
+                selectedYear={String(selectedYear)}
                 height={360}
               />
             )

@@ -1,0 +1,20 @@
+# Render Blueprint — https://render.com/docs/blueprint-spec
+# Connect GitHub repo → New Blueprint → select this file
+services:
+  - type: web
+    name: smartriver
+    runtime: docker
+    plan: free
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /health
+    envVars:
+      - key: PYTHONPATH
+        value: /app
+      - key: JWT_SECRET_KEY
+        generateValue: true
+      - key: SMARTRIVER_DEFER_FORECAST
+        value: "true"
+      - key: SMARTRIVER_OTP_DEV_LOG
+        value: "true"
+      - key: SMARTRIVER_SQLITE_PATH
+        value: /tmp/smartriver.sqlite3
