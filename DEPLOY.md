@@ -32,11 +32,24 @@ Recommended host: **[Render](https://render.com)** (free tier gives a permanent 
 
 ## Deploy on Render (step by step)
 
+### Recommended: GHCR image (full LSTM support)
+
+Render’s free tier often fails when building TensorFlow on-platform (“internal system error” or OOM).  
+We build the Docker image on **GitHub Actions** instead; Render only **pulls** the image.
+
+1. Push `main` and open **GitHub → Actions → Publish Docker image**. Wait until it is green (~15 min first time).
+2. **GitHub → Packages → smartriver** → **Package settings** → **Change visibility** → **Public** (required for Render free tier).
+3. On Render: **delete** any failed `smartriver` web service.
+4. **Blueprint → Manual sync** (reads `render.yaml` with `runtime: image`).
+5. Open your URL: `https://smartriver-xxxx.onrender.com`
+
+### Fallback: native Python (no LSTM on cloud)
+
+If image deploy still fails, copy `render-native-lite.yaml` to `render.yaml`, push, sync.  
+The site and dashboard work; 2026 LSTM forecast is skipped without TensorFlow.
+
 1. Sign in at [render.com](https://render.com) with GitHub.
-2. **New → Blueprint** → connect `Zarifirfan42/SmartRiver` → Render reads `render.yaml`.
-3. Confirm service name `smartriver` → **Apply**.
-4. Wait for the first build (~10–15 min: Node build + TensorFlow install).
-5. Open your URL: `https://smartriver-<random>.onrender.com`
+2. Replace `render.yaml` with `render-native-lite.yaml` contents, push, **Manual sync**.
 
 ### Default login
 | Email | Password |
@@ -94,8 +107,10 @@ Open http://localhost:8000
 
 | Issue | Fix |
 |-------|-----|
-| **Deploy failed (Docker)** | Blueprint now uses **native Python** (`runtime: python`) — click **Manual sync** after pulling latest `main`. |
-| Build fails on TensorFlow | Check Render build logs; retry deploy. If OOM, upgrade Render plan or use `Dockerfile` on a paid tier. |
+| **Internal system error** | Delete failed service → wait for GitHub Actions image build → make GHCR package **Public** → Manual sync. |
+| **Image pull failed** | Package must be public at `ghcr.io/zarifirfan42/smartriver`. |
+| **Deploy failed (Docker on Render)** | Use GHCR image flow above; do not build TensorFlow on Render. |
+| Build fails on TensorFlow | Use `render-native-lite.yaml` fallback (no LSTM on cloud). |
 | 502 / health check failed | Wait 60s after deploy; dataset + LSTM load in background. Check logs for errors. |
 | Flat ~46 WQI forecast | Old LSTM scaler — retrain and push `ml_models/lstm/stations/`. |
 | Registration OTP | Render → Logs → search `OTP` when `SMARTRIVER_OTP_DEV_LOG=true`. |

@@ -1,0 +1,4 @@
+# Render production — no TensorFlow (fast, reliable free-tier build).
+# LSTM forecasts are skipped unless TensorFlow is present; use GHCR image deploy for full ML.
+-r requirements-backend-minimal.txt
+email-validator>=2.0.0

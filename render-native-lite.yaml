@@ -1,0 +1,23 @@
+# Fallback if GHCR image deploy fails — native Python, no TensorFlow, fastest Render build.
+# Rename to render.yaml and Manual sync (or create Web Service manually with these settings).
+services:
+  - type: web
+    name: smartriver
+    runtime: python
+    plan: free
+    buildCommand: pip install --no-cache-dir -r requirements-render.txt && cd frontend && npm ci && VITE_API_URL=/api/v1 npm run build
+    startCommand: uvicorn backend.app.main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+    envVars:
+      - key: PYTHONPATH
+        value: .
+      - key: NODE_VERSION
+        value: "20"
+      - key: JWT_SECRET_KEY
+        generateValue: true
+      - key: SMARTRIVER_DEFER_FORECAST
+        value: "true"
+      - key: SMARTRIVER_OTP_DEV_LOG
+        value: "true"
+      - key: SMARTRIVER_SQLITE_PATH
+        value: /tmp/smartriver.sqlite3
