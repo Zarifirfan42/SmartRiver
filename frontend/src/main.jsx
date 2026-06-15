@@ -2,6 +2,8 @@ import React from 'react'
 import ReactDOM from 'react-dom/client'
 import 'leaflet/dist/leaflet.css'
 import './styles/index.css'
+import App from './App'
+import ErrorBoundary from './components/common/ErrorBoundary'
 
 function showError(msg) {
   const root = document.getElementById('root')
@@ -14,22 +16,15 @@ function showError(msg) {
   }
 }
 
-async function bootstrap() {
-  try {
-    const { default: App } = await import('./App')
-    const { default: ErrorBoundary } = await import('./components/common/ErrorBoundary')
-
-    ReactDOM.createRoot(document.getElementById('root')).render(
-      <React.StrictMode>
-        <ErrorBoundary>
-          <App />
-        </ErrorBoundary>
-      </React.StrictMode>
-    )
-  } catch (err) {
-    console.error('SmartRiver bootstrap error:', err)
-    showError(err?.message || err?.stack || String(err))
-  }
+try {
+  ReactDOM.createRoot(document.getElementById('root')).render(
+    <React.StrictMode>
+      <ErrorBoundary>
+        <App />
+      </ErrorBoundary>
+    </React.StrictMode>
+  )
+} catch (err) {
+  console.error('SmartRiver bootstrap error:', err)
+  showError(err?.message || err?.stack || String(err))
 }
-
-bootstrap()

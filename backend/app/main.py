@@ -189,27 +189,41 @@ if not _SPA_MODE:
         return RedirectResponse(url=f"{FRONTEND_URL}/dashboard", status_code=302)
 
 else:
-    from fastapi.staticfiles import StaticFiles
-    from fastapi.responses import FileResponse
+    import mimetypes
+
     from fastapi import HTTPException
+    from fastapi.responses import FileResponse
 
-    _assets_dir = _FRONTEND_DIST / "assets"
-    if _assets_dir.is_dir():
-        app.mount("/assets", StaticFiles(directory=str(_assets_dir)), name="frontend-assets")
+    _asset_count = len(list((_FRONTEND_DIST / "assets").glob("*"))) if (_FRONTEND_DIST / "assets").is_dir() else 0
+    print(f"SPA mode ON: {_FRONTEND_DIST} ({_asset_count} files in assets/)")
 
-    _images_dir = _FRONTEND_DIST / "images"
-    if _images_dir.is_dir():
-        app.mount("/images", StaticFiles(directory=str(_images_dir)), name="frontend-images")
+    def _dist_file_response(rel_path: str) -> FileResponse:
+        target = (_FRONTEND_DIST / rel_path).resolve()
+        root = _FRONTEND_DIST.resolve()
+        if not str(target).startswith(str(root)) or not target.is_file():
+            raise HTTPException(status_code=404, detail="Not found")
+        media_type, _ = mimetypes.guess_type(str(target))
+        return FileResponse(target, media_type=media_type or "application/octet-stream")
+
+    @app.get("/assets/{asset_path:path}")
+    def serve_frontend_asset(asset_path: str):
+        return _dist_file_response(f"assets/{asset_path}")
+
+    @app.get("/images/{image_path:path}")
+    def serve_frontend_image(image_path: str):
+        return _dist_file_response(f"images/{image_path}")
 
     @app.get("/")
     def spa_root():
-        return FileResponse(_FRONTEND_DIST / "index.html")
+        return _dist_file_response("index.html")
 
     @app.get("/{spa_path:path}")
     def spa_fallback(spa_path: str):
         if spa_path.startswith("api") or spa_path in ("docs", "openapi.json", "redoc", "health"):
             raise HTTPException(status_code=404)
-        candidate = _FRONTEND_DIST / spa_path
-        if spa_path and candidate.is_file():
-            return FileResponse(candidate)
-        return FileResponse(_FRONTEND_DIST / "index.html")
+        candidate = f"{spa_path}"
+        target = (_FRONTEND_DIST / candidate).resolve()
+        root = _FRONTEND_DIST.resolve()
+        if spa_path and str(target).startswith(str(root)) and target.is_file():
+            return _dist_file_response(candidate)
+        return _dist_file_response("index.html")
