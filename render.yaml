@@ -1,15 +1,22 @@
 # Render Blueprint — https://render.com/docs/blueprint-spec
-# Connect GitHub repo → New Blueprint → select this file
+# Native Python build (more reliable on free tier than Docker + TensorFlow).
 services:
   - type: web
     name: smartriver
-    runtime: docker
+    runtime: python
     plan: free
-    dockerfilePath: ./Dockerfile
+    buildCommand: >-
+      python -m pip install --upgrade pip &&
+      pip install --no-cache-dir -r requirements-backend-minimal.txt &&
+      pip install --no-cache-dir email-validator tensorflow-cpu==2.15.1 &&
+      cd frontend && npm ci && VITE_API_URL=/api/v1 npm run build
+    startCommand: uvicorn backend.app.main:app --host 0.0.0.0 --port $PORT
     healthCheckPath: /health
     envVars:
       - key: PYTHONPATH
-        value: /app
+        value: .
+      - key: NODE_VERSION
+        value: 20.11.0
       - key: JWT_SECRET_KEY
         generateValue: true
       - key: SMARTRIVER_DEFER_FORECAST

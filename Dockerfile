@@ -7,7 +7,18 @@ COPY frontend/ ./
 ENV VITE_API_URL=/api/v1
 RUN npm run build
 
-FROM python:3.12-slim
+FROM python:3.11-slim-bookworm AS python-deps
+WORKDIR /app
+ENV PIP_NO_CACHE_DIR=1
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    gcc g++ libgomp1 \
+    && rm -rf /var/lib/apt/lists/*
+COPY requirements-backend-minimal.txt .
+RUN pip install --upgrade pip \
+    && pip install -r requirements-backend-minimal.txt \
+    && pip install email-validator "tensorflow-cpu==2.15.1"
+
+FROM python:3.11-slim-bookworm
 WORKDIR /app
 
 ENV PYTHONPATH=/app
@@ -15,12 +26,11 @@ ENV PYTHONUNBUFFERED=1
 ENV SMARTRIVER_DEFER_FORECAST=true
 ENV SMARTRIVER_SQLITE_PATH=/tmp/smartriver.sqlite3
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    gcc g++ \
+RUN apt-get update && apt-get install -y --no-install-recommends libgomp1 \
     && rm -rf /var/lib/apt/lists/*
 
-COPY requirements-deploy.txt .
-RUN pip install --no-cache-dir -r requirements-deploy.txt
+COPY --from=python-deps /usr/local/lib/python3.11/site-packages /usr/local/lib/python3.11/site-packages
+COPY --from=python-deps /usr/local/bin /usr/local/bin
 
 COPY backend/ backend/
 COPY data_preprocessing/ data_preprocessing/

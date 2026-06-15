@@ -32,9 +32,12 @@ async def lifespan(app: FastAPI):
     """On startup: seed default admin, load default dataset, run anomaly if model exists.
 
     Auth routes do not load ML models or datasets per request; heavy work happens here once.
+    On Render, SMARTRIVER_DEFER_FORECAST moves dataset load + forecast to a background thread
+    so /health responds before Excel ingest and LSTM inference finish.
     """
-    _api_port = os.environ.get("SMARTRIVER_API_PORT", "8000")
-    print("✅ Backend running on http://localhost:" + _api_port + " (start with: uvicorn ... --port " + _api_port + ")")
+    _api_port = os.environ.get("SMARTRIVER_API_PORT", os.environ.get("PORT", "8000"))
+    print("✅ SmartRiver API starting on port " + str(_api_port))
+
     try:
         from backend.db.repository import verify_auth_database_connection
 
@@ -49,26 +52,32 @@ async def lifespan(app: FastAPI):
             print("Default admin created: admin@smartriver.com")
     except Exception as e:
         print("Seed admin skipped:", e)
-    try:
-        from backend.services.dataset_loader import run_startup_data_load
-        run_startup_data_load()
-        from backend.db.repository import migrate_store_river_names
-        migrate_store_river_names()
-        print("Default dataset loaded; stations and WQI data ready.")
-    except Exception as e:
-        print("Dataset load skipped:", e)
-    try:
-        from backend.services.live_simulation import start_daily_scheduler
-        start_daily_scheduler()
-    except Exception as e:
-        print("Live simulation scheduler skipped:", e)
 
-    # Defer LSTM 2026 forecast so the server passes health checks quickly (Render/Railway).
-    defer_fc = (os.environ.get("SMARTRIVER_DEFER_FORECAST") or "").strip().lower() in ("1", "true", "yes", "on")
-    if defer_fc:
-        import threading
+    defer_heavy = (os.environ.get("SMARTRIVER_DEFER_FORECAST") or "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
 
-        def _background_forecast() -> None:
+    def _heavy_startup() -> None:
+        try:
+            from backend.services.dataset_loader import run_startup_data_load
+
+            run_startup_data_load()
+            from backend.db.repository import migrate_store_river_names
+
+            migrate_store_river_names()
+            print("Default dataset loaded; stations and WQI data ready.")
+        except Exception as e:
+            print("Dataset load skipped:", e)
+        try:
+            from backend.services.live_simulation import start_daily_scheduler
+
+            start_daily_scheduler()
+        except Exception as e:
+            print("Live simulation scheduler skipped:", e)
+        if defer_heavy:
             try:
                 from backend.services.forecast_service import run_forecast
 
@@ -77,8 +86,13 @@ async def lifespan(app: FastAPI):
             except Exception as exc:
                 print("Background forecast failed:", exc)
 
-        threading.Thread(target=_background_forecast, daemon=True).start()
-        print("LSTM forecast scheduled in background (SMARTRIVER_DEFER_FORECAST).")
+    if defer_heavy:
+        import threading
+
+        threading.Thread(target=_heavy_startup, daemon=True).start()
+        print("Dataset + LSTM startup scheduled in background (SMARTRIVER_DEFER_FORECAST).")
+    else:
+        _heavy_startup()
 
     yield
 

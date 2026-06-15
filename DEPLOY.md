@@ -94,7 +94,8 @@ Open http://localhost:8000
 
 | Issue | Fix |
 |-------|-----|
-| Build fails on TensorFlow | Render free has enough RAM; retry deploy. |
+| **Deploy failed (Docker)** | Blueprint now uses **native Python** (`runtime: python`) — click **Manual sync** after pulling latest `main`. |
+| Build fails on TensorFlow | Check Render build logs; retry deploy. If OOM, upgrade Render plan or use `Dockerfile` on a paid tier. |
+| 502 / health check failed | Wait 60s after deploy; dataset + LSTM load in background. Check logs for errors. |
 | Flat ~46 WQI forecast | Old LSTM scaler — retrain and push `ml_models/lstm/stations/`. |
-| 502 on first load | Wait for health check; check Render logs. |
 | Registration OTP | Render → Logs → search `OTP` when `SMARTRIVER_OTP_DEV_LOG=true`. |
