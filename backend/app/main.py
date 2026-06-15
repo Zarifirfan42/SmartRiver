@@ -71,20 +71,34 @@ async def lifespan(app: FastAPI):
             print("Default dataset loaded; stations and WQI data ready.")
         except Exception as e:
             print("Dataset load skipped:", e)
+
+        # Fast path: hydrate forecast from bundled cache so dashboard predictions show immediately.
+        try:
+            from backend.services.forecast_service import run_forecast
+
+            n = len(run_forecast() or [])
+            if n > 0:
+                print(f"Forecast ready: {n} points (cache or LSTM).")
+        except Exception as e:
+            print("Initial forecast load skipped:", e)
+
         try:
             from backend.services.live_simulation import start_daily_scheduler
 
             start_daily_scheduler()
         except Exception as e:
             print("Live simulation scheduler skipped:", e)
+
         if defer_heavy:
             try:
-                from backend.services.forecast_service import run_forecast
+                from backend.db.repository import _latest_dashboard_forecast_log
+                from backend.services.forecast_ensure import run_forecast_with_retries
 
-                n = len(run_forecast() or [])
-                print(f"Background forecast complete: {n} points.")
+                if not _latest_dashboard_forecast_log():
+                    n = run_forecast_with_retries(attempts=2, delay_seconds=60.0)
+                    print(f"Background forecast retry complete: {n} points.")
             except Exception as exc:
-                print("Background forecast failed:", exc)
+                print("Background forecast retry failed:", exc)
 
     if defer_heavy:
         import threading

@@ -108,6 +108,94 @@ def _pad_history_for_seq_len(df, seq_len: int, station_code: str):
     return pd.concat(pad_rows + [df], ignore_index=True).sort_values("date")
 
 
+def _compute_lstm_forecast(
+    *,
+    readings: list[dict],
+    station_labels: list[str],
+    start_d: date,
+    end_d: date,
+    build_prediction_window,
+    predict,
+    pd,
+) -> list[dict]:
+    """Run per-station LSTM inference for 2026 using multi-day horizon chunks (faster than 1-day steps)."""
+    from backend.db.repository import status_from_wqi
+    from backend.services.river_mapping import river_name_for_station
+
+    forecast: list[dict] = []
+
+    for station in station_labels:
+        df_hist = _readings_to_station_dataframe(readings, station)
+        if df_hist is None or df_hist.empty:
+            continue
+        scode = str(df_hist["station_code"].iloc[-1])
+
+        model, scaler_bundle, cfg = _load_lstm_artifacts(scode)
+        if model is None or scaler_bundle is None:
+            logger.warning("Forecast: no LSTM model for station %s (%s) — skipping.", scode, station)
+            continue
+
+        seq_len = int(cfg.get("seq_len", 30))
+        model_horizon = max(1, int(cfg.get("horizon", 7)))
+        add_month_cyclical = bool(cfg.get("add_month_cyclical", False))
+        extra_param_columns = tuple(cfg.get("extra_param_columns") or ())
+
+        df_hist = _pad_history_for_seq_len(df_hist, seq_len, station)
+        df_walk = df_hist.copy()
+        current = start_d
+        fallback_wqi = float(df_walk["WQI"].iloc[-1])
+
+        while current <= end_d:
+            days_left = (end_d - current).days + 1
+            step_h = min(model_horizon, days_left)
+            try:
+                window = build_prediction_window(
+                    df_walk,
+                    station_code=scode,
+                    seq_len=seq_len,
+                    date_col="date",
+                    add_month_cyclical=add_month_cyclical,
+                    extra_param_columns=extra_param_columns,
+                )
+                pred = predict(model, scaler_bundle, window, horizon=step_h, config=cfg)
+                values = [float(v) for v in pred.flatten()[:step_h]]
+                if not values or any(v != v for v in values):
+                    raise ValueError("LSTM prediction is NaN")
+            except Exception:
+                logger.exception(
+                    "LSTM forecast chunk failed for station=%s date=%s; using last WQI.",
+                    station,
+                    current.isoformat(),
+                )
+                values = [fallback_wqi] * step_h
+
+            new_rows = []
+            for i, wqi_raw in enumerate(values):
+                day = current + timedelta(days=i)
+                wqi_next = max(0.0, min(100.0, round(float(wqi_raw), 1)))
+                fallback_wqi = wqi_next
+                st = status_from_wqi(wqi_next)
+                rn = river_name_for_station(scode, station)
+                forecast.append(
+                    {
+                        "date": day.isoformat(),
+                        "station_code": scode,
+                        "station_name": rn,
+                        "river_name": rn,
+                        "wqi": wqi_next,
+                        "river_status": st,
+                    }
+                )
+                new_rows.append({"date": pd.Timestamp(day), "WQI": wqi_next, "station_code": scode})
+
+            if new_rows:
+                df_walk = pd.concat([df_walk, pd.DataFrame(new_rows)], ignore_index=True).sort_values("date")
+            current += timedelta(days=step_h)
+
+    print(f"_compute_lstm_forecast: generated {len(forecast)} points for {len(station_labels)} stations.")
+    return forecast
+
+
 def run_forecast() -> list[dict]:
     """
     Train/infer: use the trained LSTM on historical WQI (≤ MAX_DOE_FORMULA_CSV_YEAR) per station,
@@ -119,6 +207,16 @@ def run_forecast() -> list[dict]:
 
     if str(ROOT) not in sys.path:
         sys.path.insert(0, str(ROOT))
+
+    try:
+        from ml_engine.services.forecasting_service import TF_AVAILABLE
+
+        if not TF_AVAILABLE:
+            logger.error("run_forecast: TensorFlow not available — trying bundled forecast cache.")
+            print("run_forecast: TensorFlow not available — trying cache.")
+    except Exception as exc:
+        logger.exception("run_forecast: TensorFlow import check failed: %s", exc)
+        TF_AVAILABLE = False
 
     from backend.db.repository import (
         _store,
@@ -153,76 +251,34 @@ def run_forecast() -> list[dict]:
         seen.add(lab)
         station_labels.append(lab)
 
-    forecast: list[dict] = []
     today = _today_str()
-    # Generate full 2026 horizon; API layers split date <= today (historical) vs > today (forecast).
     start_d = date(2026, 1, 1)
     end_d = FORECAST_END_DATE
     if start_d > end_d:
         print(f"Forecast: empty window (start={start_d} > policy end={end_d}).")
         return []
 
-    for station in station_labels:
-        df_hist = _readings_to_station_dataframe(readings, station)
-        if df_hist is None or df_hist.empty:
-            continue
-        scode = str(df_hist["station_code"].iloc[-1])
+    from backend.services.forecast_cache import load_forecast_cache, save_forecast_cache
 
-        model, scaler_bundle, cfg = _load_lstm_artifacts(scode)
-        if model is None or scaler_bundle is None:
-            logger.warning("Forecast: no LSTM model for station %s (%s) — skipping.", scode, station)
-            continue
+    forecast = load_forecast_cache()
+    if forecast is None:
+        if not TF_AVAILABLE:
+            print("run_forecast: no cache and no TensorFlow — forecast empty.")
+            return []
+        forecast = _compute_lstm_forecast(
+            readings=readings,
+            station_labels=station_labels,
+            start_d=start_d,
+            end_d=end_d,
+            build_prediction_window=build_prediction_window,
+            predict=predict,
+            pd=pd,
+        )
+        if forecast:
+            save_forecast_cache(forecast)
 
-        seq_len = int(cfg.get("seq_len", 30))
-        add_month_cyclical = bool(cfg.get("add_month_cyclical", False))
-        extra_param_columns = tuple(cfg.get("extra_param_columns") or ())
-
-        df_hist = _pad_history_for_seq_len(df_hist, seq_len, station)
-        df_walk = df_hist.copy()
-        current = start_d
-
-        while current <= end_d:
-            try:
-                window = build_prediction_window(
-                    df_walk,
-                    station_code=scode,
-                    seq_len=seq_len,
-                    date_col="date",
-                    add_month_cyclical=add_month_cyclical,
-                    extra_param_columns=extra_param_columns,
-                )
-                pred = predict(model, scaler_bundle, window, horizon=1, config=cfg)
-                wqi_next = float(pred.flatten()[0])
-                if not (wqi_next == wqi_next):  # NaN guard
-                    raise ValueError("LSTM prediction is NaN")
-            except Exception:
-                logger.exception(
-                    "LSTM forecast step failed for station=%s date=%s; using last observed WQI.",
-                    station,
-                    current.isoformat(),
-                )
-                wqi_next = float(df_walk["WQI"].iloc[-1])
-            wqi_next = max(0.0, min(100.0, round(wqi_next, 1)))
-
-            date_str = current.isoformat()
-            st = status_from_wqi(wqi_next)
-            rn = river_name_for_station(scode, station)
-            forecast.append(
-                {
-                    "date": date_str,
-                    "station_code": scode,
-                    "station_name": rn,
-                    "river_name": rn,
-                    "wqi": wqi_next,
-                    "river_status": st,
-                }
-            )
-
-            new_row = pd.DataFrame(
-                [{"date": pd.Timestamp(current), "WQI": wqi_next, "station_code": scode}]
-            )
-            df_walk = pd.concat([df_walk, new_row], ignore_index=True).sort_values("date")
-            current += timedelta(days=1)
+    if not forecast:
+        return []
 
     forecast.sort(key=lambda x: (x["date"], x["station_code"]))
 

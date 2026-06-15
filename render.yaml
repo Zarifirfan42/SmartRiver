@@ -24,3 +24,9 @@ services:
         value: "true"
       - key: SMARTRIVER_SQLITE_PATH
         value: /tmp/smartriver.sqlite3
+      - key: TF_NUM_INTRAOP_THREADS
+        value: "1"
+      - key: TF_NUM_INTEROP_THREADS
+        value: "1"
+      - key: TF_CPP_MIN_LOG_LEVEL
+        value: "2"

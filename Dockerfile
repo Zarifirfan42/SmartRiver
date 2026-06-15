@@ -25,6 +25,9 @@ ENV PYTHONPATH=/app
 ENV PYTHONUNBUFFERED=1
 ENV SMARTRIVER_DEFER_FORECAST=true
 ENV SMARTRIVER_SQLITE_PATH=/tmp/smartriver.sqlite3
+ENV TF_NUM_INTRAOP_THREADS=1
+ENV TF_NUM_INTEROP_THREADS=1
+ENV TF_CPP_MIN_LOG_LEVEL=2
 
 RUN apt-get update && apt-get install -y --no-install-recommends libgomp1 \
     && rm -rf /var/lib/apt/lists/*

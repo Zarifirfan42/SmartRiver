@@ -100,10 +100,53 @@ _store = {
 def _raw_forecast_points_from_log() -> list[dict]:
     """All dated LSTM points from the latest dashboard forecast log (full 2026 horizon)."""
     latest = _latest_dashboard_forecast_log()
-    if not latest:
+    if latest:
+        pts = latest.get("result_json", {}).get("forecast", [])
+        dated = [f for f in pts if isinstance(f, dict) and len((f.get("date") or "").strip()) >= 10]
+        if dated:
+            return dated
+    return _raw_forecast_points_from_sqlite()
+
+
+def _sqlite_row_to_forecast_point(row: dict) -> dict:
+    code = resolve_canonical_station_code(row.get("station_code"), row.get("station_name"))
+    rn = river_name_for_station(code, row.get("station_name"))
+    try:
+        wqi = float(row.get("WQI") if row.get("WQI") is not None else row.get("wqi") or 0)
+    except (TypeError, ValueError):
+        wqi = 0.0
+    d = (row.get("date") or row.get("reading_date") or "")[:10]
+    st = row.get("pollution_status") or row.get("river_status") or status_from_wqi(wqi)
+    return {
+        "date": d,
+        "station_code": code,
+        "station_name": rn,
+        "river_name": rn,
+        "wqi": wqi,
+        "river_status": st,
+    }
+
+
+def _raw_forecast_points_from_sqlite() -> list[dict]:
+    """Fallback when in-memory prediction_logs are empty (e.g. after Render restart)."""
+    try:
+        with _sqlite_conn() as conn:
+            rows = conn.execute(
+                """
+                SELECT date, station_code, station_name, WQI, pollution_status
+                FROM water_quality_records
+                WHERE data_source = 'lstm_forecast'
+                  AND date >= '2026-01-01'
+                  AND date <= ?
+                ORDER BY date ASC, station_code ASC
+                LIMIT 50000
+                """,
+                (FORECAST_PLANNING_END,),
+            ).fetchall()
+        return [_sqlite_row_to_forecast_point(dict(r)) for r in rows]
+    except Exception:
+        logger.exception("_raw_forecast_points_from_sqlite failed")
         return []
-    pts = latest.get("result_json", {}).get("forecast", [])
-    return [f for f in pts if isinstance(f, dict) and len((f.get("date") or "").strip()) >= 10]
 
 
 def _forecast_point_to_reading(f: dict) -> dict:
@@ -1926,12 +1969,15 @@ def get_latest_forecast(
     year_to: Optional[int] = None,
 ) -> list[dict]:
     """Forecast from prediction_logs: only dates > today (starts from tomorrow). Optional filter by station and year range."""
+    try:
+        from backend.services.forecast_ensure import schedule_forecast_if_needed
+
+        schedule_forecast_if_needed()
+    except Exception:
+        logger.exception("get_latest_forecast: schedule_forecast_if_needed skipped")
+
     today = _today_str()
-    latest = _latest_dashboard_forecast_log()
-    if not latest:
-        return []
-    forecast = latest.get("result_json", {}).get("forecast", [])
-    forecast = [f for f in forecast if (f.get("date") or "") > today]
+    forecast = [f for f in _raw_forecast_points_from_log() if (f.get("date") or "") > today]
     forecast = [f for f in forecast if (f.get("date") or "")[:10] <= FORECAST_PLANNING_END]
     if station_code:
         scf = normalize_station_code(station_code)
