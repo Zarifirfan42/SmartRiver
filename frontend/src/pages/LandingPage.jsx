@@ -1,4 +1,4 @@
-import { useRef, useCallback } from 'react'
+import { useRef, useCallback, useState, useEffect } from 'react'
 import { Link, Navigate } from 'react-router-dom'
 import { useAuth } from '../context/AuthContext'
 import HeroBackground from '../components/landing/HeroBackground'
@@ -7,10 +7,49 @@ import FeatureCards from '../components/landing/FeatureCards'
 import ReportIssueButton from '../components/feedback/ReportIssueButton'
 import '../styles/landing.css'
 
+function EntryChoiceModal({ open, onClose }) {
+  if (!open) return null
+
+  return (
+    <div
+      className="landing-choice-overlay"
+      onClick={onClose}
+      role="presentation"
+    >
+      <div
+        className="landing-choice-panel"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="entry-choice-title"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <h2 id="entry-choice-title" className="landing-choice-title">
+          How would you like to continue?
+        </h2>
+        <p className="landing-choice-desc">
+          Guests can explore the full river dashboard. Admins sign in to manage data and notices.
+        </p>
+        <div className="landing-choice-actions">
+          <Link to="/dashboard" className="landing-btn-primary landing-choice-btn">
+            Continue as Guest
+          </Link>
+          <Link to="/login" className="landing-btn-ghost landing-choice-btn">
+            Continue as Admin
+          </Link>
+        </div>
+        <button type="button" className="landing-choice-cancel" onClick={onClose}>
+          Cancel
+        </button>
+      </div>
+    </div>
+  )
+}
+
 export default function LandingPage() {
   const { user, loading } = useAuth()
   const heroRef = useRef(null)
   const glowRef = useRef(null)
+  const [showEntryChoice, setShowEntryChoice] = useState(false)
 
   const handleCursorMove = useCallback((e) => {
     const glow = glowRef.current
@@ -27,6 +66,20 @@ export default function LandingPage() {
   const handleCursorLeave = useCallback(() => {
     glowRef.current?.classList.remove('is-active')
   }, [])
+
+  useEffect(() => {
+    if (!showEntryChoice) return undefined
+    const onKey = (e) => {
+      if (e.key === 'Escape') setShowEntryChoice(false)
+    }
+    window.addEventListener('keydown', onKey)
+    const previousOverflow = document.body.style.overflow
+    document.body.style.overflow = 'hidden'
+    return () => {
+      window.removeEventListener('keydown', onKey)
+      document.body.style.overflow = previousOverflow
+    }
+  }, [showEntryChoice])
 
   if (loading) {
     return (
@@ -66,9 +119,13 @@ export default function LandingPage() {
             </p>
 
             <div className="landing-enter landing-enter-4 mt-10">
-              <Link to="/login" className="landing-btn-primary">
+              <button
+                type="button"
+                className="landing-btn-primary"
+                onClick={() => setShowEntryChoice(true)}
+              >
                 Get Started
-              </Link>
+              </button>
             </div>
 
             <div className="landing-enter landing-enter-5 mt-10 flex flex-wrap gap-x-6 gap-y-3">
@@ -98,9 +155,13 @@ export default function LandingPage() {
         <p className="landing-hero-desc text-white/65 mb-10 max-w-lg mx-auto">
           Join SmartRiver to access live WQI data, ML forecasts, and historical analytics.
         </p>
-        <Link to="/login" className="landing-btn-primary">
+        <button
+          type="button"
+          className="landing-btn-primary"
+          onClick={() => setShowEntryChoice(true)}
+        >
           Get Started
-        </Link>
+        </button>
         <div className="mt-10">
           <ReportIssueButton className="landing-body-text text-white/45 hover:text-[var(--color-primary)] underline underline-offset-2" />
         </div>
@@ -109,6 +170,8 @@ export default function LandingPage() {
       <footer className="py-8 text-center landing-footer-text text-white/35 border-t border-white/5">
         SmartRiver · Water Quality Intelligence for Malaysia
       </footer>
+
+      <EntryChoiceModal open={showEntryChoice} onClose={() => setShowEntryChoice(false)} />
     </div>
   )
 }

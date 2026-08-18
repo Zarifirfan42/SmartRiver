@@ -53,12 +53,18 @@ export default function AuthPage() {
           <p className="mt-4 landing-hero-desc text-white/65">
             {initialTab === 'register'
               ? 'Create your account to access river monitoring and forecasts.'
-              : 'Welcome back — sign in to continue.'}
+              : 'Admin sign-in — manage datasets, notices, and reports.'}
           </p>
         </div>
 
         <LandingAuthForm initialTab={initialTab} redirectFrom={location.state?.from} />
 
+        <p className="mt-6 text-center landing-body-text text-white/55">
+          Just browsing?{' '}
+          <Link to="/dashboard" className="text-[var(--color-primary)] hover:underline font-semibold">
+            Continue as guest
+          </Link>
+        </p>
         <div className="mt-8 text-center">
           <ReportIssueButton className="landing-body-text text-white/45 hover:text-[var(--color-primary)] underline underline-offset-2" />
         </div>

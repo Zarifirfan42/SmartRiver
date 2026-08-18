@@ -24,44 +24,24 @@ function App() {
           <Route path="/login" element={<LoginPage />} />
           <Route path="/register" element={<RegisterPage />} />
           <Route path="/forgot-password" element={<ForgotPasswordPage />} />
-          <Route
-            element={
-              <ProtectedRoute>
-                <AppLayout />
-              </ProtectedRoute>
-            }
-          >
+          <Route element={<AppLayout />}>
             <Route path="dashboard" element={<Dashboard />} />
             <Route path="river-health" element={<RiverHealthPage />} />
             <Route path="river-insights" element={<RiverInsightsPage />} />
             <Route path="forecast" element={<PollutionForecastPage />} />
             <Route path="alerts" element={<AlertMonitoringPage />} />
             <Route path="export" element={<Navigate to="/dashboard" replace />} />
-            <Route
-              path="upload"
-              element={
-                <ProtectedRoute requireAdmin>
-                  <DatasetUploadPage />
-                </ProtectedRoute>
-              }
-            />
-            <Route
-              path="feedback-reports"
-              element={
-                <ProtectedRoute requireAdmin>
-                  <FeedbackReportsPage />
-                </ProtectedRoute>
-              }
-            />
-            <Route
-              path="admin-warnings"
-              element={
-                <ProtectedRoute requireAdmin>
-                  <AdminWarningsPage />
-                </ProtectedRoute>
-              }
-            />
-            <Route path="*" element={<Navigate to="/dashboard" replace />} />
+          </Route>
+          <Route
+            element={
+              <ProtectedRoute requireAdmin>
+                <AppLayout />
+              </ProtectedRoute>
+            }
+          >
+            <Route path="upload" element={<DatasetUploadPage />} />
+            <Route path="feedback-reports" element={<FeedbackReportsPage />} />
+            <Route path="admin-warnings" element={<AdminWarningsPage />} />
           </Route>
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>

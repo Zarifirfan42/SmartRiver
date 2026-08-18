@@ -1,4 +1,4 @@
-import { NavLink, Outlet, useNavigate } from 'react-router-dom'
+import { Link, NavLink, Outlet, useNavigate } from 'react-router-dom'
 import { useEffect, useState } from 'react'
 import { useAuth } from '../../context/AuthContext'
 import ReportIssueButton from '../feedback/ReportIssueButton'
@@ -94,14 +94,36 @@ export default function AppLayout() {
           <div className="text-sm text-surface-500">Predictive River Pollution Monitoring</div>
           <div className="flex items-center gap-4">
             <ReportIssueButton />
-            <span className="text-sm text-surface-600">{user?.full_name || user?.email}</span>
-            <button
-              type="button"
-              onClick={handleLogout}
-              className="text-sm font-medium text-surface-600 hover:text-river-600"
-            >
-              Log out
-            </button>
+            {user ? (
+              <>
+                <span className="text-sm text-surface-600">{user.full_name || user.email}</span>
+                <button
+                  type="button"
+                  onClick={handleLogout}
+                  className="text-sm font-medium text-surface-600 hover:text-river-600"
+                >
+                  Log out
+                </button>
+              </>
+            ) : (
+              <>
+                <span className="rounded-full bg-river-50 px-2.5 py-1 text-xs font-semibold text-river-700">
+                  Guest
+                </span>
+                <Link
+                  to="/"
+                  className="text-sm font-medium text-surface-600 hover:text-river-600"
+                >
+                  Home
+                </Link>
+                <Link
+                  to="/login"
+                  className="text-sm font-medium text-surface-600 hover:text-river-600"
+                >
+                  Admin login
+                </Link>
+              </>
+            )}
           </div>
         </header>
         <main className="flex-1 overflow-auto p-6">
