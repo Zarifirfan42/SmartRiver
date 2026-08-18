@@ -100,13 +100,6 @@ export default function LandingPage() {
               <span className="trust-badge hidden sm:inline text-white/20">|</span>
               <span className="trust-badge">📊 Historical Data 2023–2025</span>
             </div>
-
-            <p className="landing-enter landing-enter-5 mt-8 landing-body-text text-white/55">
-              New here?{' '}
-              <Link to="/register" className="text-[var(--color-primary)] hover:underline font-semibold">
-                Create an account
-              </Link>
-            </p>
           </div>
         </div>
       </section>

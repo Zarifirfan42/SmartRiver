@@ -4,7 +4,6 @@ import { ProtectedRoute } from './components/common/ProtectedRoute'
 import AppLayout from './components/layout/AppLayout'
 import LandingPage from './pages/LandingPage'
 import LoginPage from './pages/LoginPage'
-import RegisterPage from './pages/RegisterPage'
 import ForgotPasswordPage from './pages/ForgotPasswordPage'
 import Dashboard from './pages/Dashboard'
 import RiverHealthPage from './pages/RiverHealthPage'
@@ -22,7 +21,7 @@ function App() {
         <Routes>
           <Route path="/" element={<LandingPage />} />
           <Route path="/login" element={<LoginPage />} />
-          <Route path="/register" element={<RegisterPage />} />
+          <Route path="/register" element={<Navigate to="/login" replace />} />
           <Route path="/forgot-password" element={<ForgotPasswordPage />} />
           <Route element={<AppLayout />}>
             <Route path="dashboard" element={<Dashboard />} />

@@ -9,7 +9,6 @@ import '../styles/landing.css'
 export default function AuthPage() {
   const { user, loading } = useAuth()
   const location = useLocation()
-  const initialTab = location.pathname === '/register' ? 'register' : 'login'
 
   if (loading) {
     return (
@@ -51,13 +50,11 @@ export default function AuthPage() {
             SmartRiver
           </Link>
           <p className="mt-4 landing-hero-desc text-white/65">
-            {initialTab === 'register'
-              ? 'Create your account to access river monitoring and forecasts.'
-              : 'Admin sign-in — manage datasets, notices, and reports.'}
+            Admin sign-in — manage datasets, notices, and reports.
           </p>
         </div>
 
-        <LandingAuthForm initialTab={initialTab} redirectFrom={location.state?.from} />
+        <LandingAuthForm initialTab="login" redirectFrom={location.state?.from} />
 
         <p className="mt-6 text-center landing-body-text text-white/55">
           Just browsing?{' '}

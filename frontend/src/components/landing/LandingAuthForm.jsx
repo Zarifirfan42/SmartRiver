@@ -29,15 +29,6 @@ export default function LandingAuthForm({ initialTab = 'login', redirectFrom }) 
   const navigate = useNavigate()
   const location = useLocation()
 
-  const switchTab = (next) => {
-    setTab(next)
-    setError('')
-    setInfo('')
-    setRegisterStep('form')
-    setOtp('')
-    navigate(next === 'register' ? '/register' : '/login', { replace: true, state: location.state })
-  }
-
   useEffect(() => {
     setTab(initialTab)
   }, [initialTab])
@@ -144,25 +135,6 @@ export default function LandingAuthForm({ initialTab = 'login', redirectFrom }) 
 
   return (
     <div className="landing-auth-card w-full max-w-md mx-auto p-6 sm:p-8">
-      {registerStep === 'form' && (
-        <div className="flex gap-1 p-1 rounded-lg bg-white/5 mb-6">
-          <button
-            type="button"
-            className={`landing-auth-tab ${tab === 'login' ? 'is-active' : ''}`}
-            onClick={() => switchTab('login')}
-          >
-            Login
-          </button>
-          <button
-            type="button"
-            className={`landing-auth-tab ${tab === 'register' ? 'is-active' : ''}`}
-            onClick={() => switchTab('register')}
-          >
-            Register
-          </button>
-        </div>
-      )}
-
       {error && (
         <div className="rounded-lg bg-red-500/15 border border-red-500/30 px-3 py-2.5 landing-body-text text-red-200 mb-4">
           {error}
